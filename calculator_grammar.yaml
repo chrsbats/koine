@@ -1,6 +1,7 @@
 start_rule: expression
 
 rules:
+  # Lowest precedence: Addition/Subtraction (Left-Associative)
   expression:
     ast: { structure: "left_associative_op" }
     transpile: { template: "({op} {left} {right})" }
@@ -9,20 +10,34 @@ rules:
       - zero_or_more:
           sequence: [{rule: _}, {rule: add_op}, {rule: _}, {rule: term}]
 
+  # Next precedence: Multiplication/Division (Left-Associative)
   term:
     ast: { structure: "left_associative_op" }
     transpile: { template: "({op} {left} {right})" }
     sequence:
-      - { rule: factor }
+      - { rule: power } # <-- Calls 'power' instead of 'factor'
       - zero_or_more:
-          sequence: [{rule: _}, {rule: mul_op}, {rule: _}, {rule: factor}]
+          sequence: [{rule: _}, {rule: mul_op}, {rule: _}, {rule: power}]
 
+  # New Rule: Highest precedence operator (Right-Associative)
+  power:
+    ast: { structure: "right_associative_op" }
+    transpile: { template: "({op} {left} {right})" }
+    sequence:
+      - { rule: factor } # The left-hand side
+      - optional: # The (op expr)? part
+          sequence:
+            - { rule: _ }
+            - { rule: power_op }
+            - { rule: _ }
+            - { rule: power } # <-- The right-recursive call
+
+  # Base of the expression tree
   factor:
     ast: { promote: true }
     transpile: { promote: true }
     choice:
       - { rule: number }
-      # THE FIX IS HERE: We explicitly mark "(" and ")" as literals.
       - sequence:
           - { literal: "(" }
           - { rule: _ }
@@ -41,6 +56,12 @@ rules:
     choice:
       - { literal: "*", transpile: { value: "mul" } }
       - { literal: "/", transpile: { value: "div" } }
+
+  # New operator definition
+  power_op:
+    ast: { leaf: true }
+    literal: "^"
+    transpile: { value: "pow" }
 
   number:
     ast: { leaf: true, type: "number" }

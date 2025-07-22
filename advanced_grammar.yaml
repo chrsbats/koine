@@ -1,0 +1,54 @@
+start_rule: statement
+
+rules:
+  statement:
+    ast: { promote: true }
+    choice:
+      - { rule: clone_to_statement }
+      - { rule: clone_statement }
+
+  clone_to_statement:
+    ast: { tag: "clone_to" }
+    transpile: { template: "(clone-to {repo} {dest})" }
+    sequence:
+      - positive_lookahead:
+          sequence:
+            - { literal: "CLONE" }
+            - { rule: _ }
+            - { rule: path }
+            - { rule: _ }
+            - { literal: "TO" }
+      - { rule: clone_keyword }
+      - { rule: _ }
+      - { rule: path, ast: { name: "repo" } }
+      - { rule: _ }
+      - { rule: to_keyword }
+      - { rule: _ }
+      - { rule: path, ast: { name: "dest" } }
+
+  clone_statement:
+    ast: { tag: "clone" }
+    transpile: { template: "(clone {repo})" }
+    sequence:
+      - { rule: clone_keyword }
+      - { rule: _ }
+      - { rule: path, ast: { name: "repo" } }
+      - negative_lookahead:
+          sequence: [ {rule: _}, {rule: to_keyword} ]
+
+  path:
+    ast: { leaf: true }
+    transpile: { use: "text" }
+    regex: "[^\\s]+"
+
+  clone_keyword:
+    ast: { discard: true }
+    literal: "CLONE"
+
+  to_keyword:
+    ast: { discard: true }
+    literal: "TO"
+
+  _:
+    ast: { discard: true }
+    regex: "[ \\t]+"
