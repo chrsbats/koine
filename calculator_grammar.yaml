@@ -1,0 +1,52 @@
+start_rule: expression
+
+rules:
+  expression:
+    ast: { structure: "left_associative_op" }
+    transpile: { template: "({op} {left} {right})" }
+    sequence:
+      - { rule: term }
+      - zero_or_more:
+          sequence: [{rule: _}, {rule: add_op}, {rule: _}, {rule: term}]
+
+  term:
+    ast: { structure: "left_associative_op" }
+    transpile: { template: "({op} {left} {right})" }
+    sequence:
+      - { rule: factor }
+      - zero_or_more:
+          sequence: [{rule: _}, {rule: mul_op}, {rule: _}, {rule: factor}]
+
+  factor:
+    ast: { promote: true }
+    transpile: { promote: true }
+    choice:
+      - { rule: number }
+      # THE FIX IS HERE: We explicitly mark "(" and ")" as literals.
+      - sequence:
+          - { literal: "(" }
+          - { rule: _ }
+          - { rule: expression }
+          - { rule: _ }
+          - { literal: ")" }
+
+  add_op:
+    ast: { leaf: true }
+    choice:
+      - { literal: "+", transpile: { value: "add" } }
+      - { literal: "-", transpile: { value: "sub" } }
+
+  mul_op:
+    ast: { leaf: true }
+    choice:
+      - { literal: "*", transpile: { value: "mul" } }
+      - { literal: "/", transpile: { value: "div" } }
+
+  number:
+    ast: { leaf: true, type: "number" }
+    transpile: { use: "value" }
+    regex: "-?\\d+"
+  
+  _:
+    ast: { discard: true }
+    regex: "[ \\t]*"
