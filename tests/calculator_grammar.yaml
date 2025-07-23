@@ -1,6 +1,15 @@
-start_rule: expression
+start_rule: program
 
 rules:
+  program:
+    sequence:
+      - { rule: expression }
+      - zero_or_more:
+          sequence:
+            - { rule: separator }
+            - { rule: expression }
+      - { rule: trailing_whitespace }
+
   # Lowest precedence: Addition/Subtraction (Left-Associative)
   expression:
     ast: { structure: "left_associative_op" }
@@ -67,7 +76,15 @@ rules:
     ast: { leaf: true, type: "number" }
     transpile: { use: "value" }
     regex: "-?\\d+"
+
+  separator:
+    ast: { discard: true }
+    regex: "[ \\t]*\\n[\\s]*"
   
   _:
     ast: { discard: true }
     regex: "[ \\t]*"
+
+  trailing_whitespace:
+    ast: { discard: true }
+    regex: "\\s*"

@@ -76,6 +76,10 @@ class LineColumnFinder:
 
     def find(self, offset: int) -> tuple[int, int]:
         """Returns (line, column) for a given character offset."""
+        if offset < 0:
+            offset = 0
+        if offset >= len(self.text):
+            offset = len(self.text) - 1
         line_num = bisect_right(self.line_starts, offset)
         col_num = offset - self.line_starts[line_num - 1] + 1
         return line_num, col_num
@@ -135,6 +139,10 @@ class AstBuilderVisitor(NodeVisitor):
             if ast_config.get('type') == 'number':
                 val = float(node.text)
                 base_node['value'] = int(val) if val.is_integer() else val
+            elif ast_config.get('type') == 'bool':
+                base_node['value'] = node.text.lower() == 'true'
+            elif ast_config.get('type') == 'null':
+                base_node['value'] = None
             return base_node
         
         
@@ -235,7 +243,23 @@ class Parser:
             ast = visitor.visit(tree)
             return {"status": "success", "ast": ast}
         except (ParseError, IncompleteParseError) as e:
-            return {"status": "error", "message": f"Syntax error at L{e.line}:C{e.column}"}
+            # Clamp the error position to [0, len(text)]
+            pos = e.pos
+            if pos < 0:
+                pos = 0
+            if pos > len(text):
+                pos = len(text)
+            line, col = finder.find(pos)
+
+            if pos >= len(text):
+                message = f"Syntax error at L{line}:C{col}. Unexpected end of input"
+            else:
+                snippet = text[pos:pos+10]
+                if len(snippet) > 10:
+                    snippet = snippet[:10] + '...'
+                message = f"Syntax error at L{line}:C{col}. Unexpected input '{snippet}'"
+
+            return {"status": "error", "message": message}
 
     def validate(self, text: str):
         result = self.parse(text)
@@ -244,8 +268,8 @@ class Parser:
         else:
             return False, result['message']
 
-    def transpile(self, text: str):
-        result = self.parse(text)
+    def transpile(self, text: str, rule: str = None):
+        result = self.parse(text, rule=rule)
         if result['status'] == 'success':
             output_code = self.transpiler.transpile(result['ast'])
             return {"status": "success", "translation": output_code}

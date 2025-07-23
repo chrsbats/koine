@@ -87,14 +87,37 @@ def test_calc(code, expected_ast, expected_translation):
     assert valid, f"Validation failed for '{code}': {msg}"
 
     # Test parsing
-    parse_result = my_parser.parse(code)
+    parse_result = my_parser.parse(code, rule="expression")
     assert parse_result['status'] == 'success'
     assert parse_result['ast'] == expected_ast
     
     # Test transpilation
-    transpiled_result = my_parser.transpile(code)
+    transpiled_result = my_parser.transpile(code, rule="expression")
     assert transpiled_result['status'] == 'success'
     assert transpiled_result['translation'] == expected_translation
+
+def test_calc_errors():
+    with open(TESTS_DIR / "calculator_grammar.yaml", "r") as f:
+        my_grammar = yaml.safe_load(f)
+
+    my_parser = Parser(my_grammar)
+
+    test_cases = [
+        ("2 + + 3", (1, 3), "+ + 3"),
+        ("2 +", (1, 3), "+"),
+        ("2 $ 3", (1, 3), "$ 3"),
+        ("1 + 2\n3 * 4\n5 $ 6", (3, 3), "$ 6"),
+    ]
+
+    for code, expected_pos, expected_snippet in test_cases:
+        result = my_parser.parse(code)
+        assert result['status'] == 'error'
+        message = result['message']
+        expected_line, expected_col = expected_pos
+        # Check the line and column are in the message
+        assert f"L{expected_line}:C{expected_col}" in message
+        # Check the snippet is in the message
+        assert expected_snippet in message
 
 def test_advanced():
     with open(TESTS_DIR / "advanced_grammar.yaml", "r") as f:
@@ -244,6 +267,86 @@ class TestKoineGrammarGeneration(unittest.TestCase):
         }
         with self.assertRaises(ValueError):
             Parser(grammar)
+
+    def test_bool_type_conversion(self):
+        """Tests that a leaf node with type: 'bool' gets a 'value' key."""
+        grammar = {
+            'start_rule': 'boolean',
+            'rules': {
+                'boolean': {
+                    'ast': {'tag': 'bool', 'leaf': True, 'type': 'bool'},
+                    'regex': r'true'
+                }
+            }
+        }
+        parser = Parser(grammar)
+        result = parser.parse('true')
+        self.assertEqual(result['status'], 'success')
+        expected_ast = {
+            'tag': 'bool',
+            'text': 'true',
+            'line': 1,
+            'col': 1,
+            'value': True
+        }
+        self.assertEqual(result['ast'], expected_ast)
+
+    def test_null_type_conversion(self):
+        """Tests that a leaf node with type: 'null' gets a value of None."""
+        grammar = {
+            'start_rule': 'null_value',
+            'rules': {
+                'null_value': {
+                    'ast': {'leaf': True, 'type': 'null'},
+                    'regex': r'null'
+                }
+            }
+        }
+        parser = Parser(grammar)
+        result = parser.parse('null')
+        self.assertEqual(result['status'], 'success')
+        expected_ast = {
+            'tag': 'null_value',
+            'text': 'null',
+            'line': 1,
+            'col': 1,
+            'value': None
+        }
+        self.assertEqual(result['ast'], expected_ast)
+
+    def test_int_type_conversion(self):
+        """Tests that a leaf node with type: 'number' becomes an integer."""
+        grammar = {
+            'start_rule': 'number',
+            'rules': {
+                'number': {
+                    'ast': {'leaf': True, 'type': 'number'},
+                    'regex': r'-?\d+'
+                }
+            }
+        }
+        parser = Parser(grammar)
+        result = parser.parse('123')
+        self.assertEqual(result['status'], 'success')
+        self.assertEqual(result['ast']['value'], 123)
+        self.assertIsInstance(result['ast']['value'], int)
+
+    def test_float_type_conversion(self):
+        """Tests that a leaf node with type: 'number' becomes a float."""
+        grammar = {
+            'start_rule': 'number',
+            'rules': {
+                'number': {
+                    'ast': {'leaf': True, 'type': 'number'},
+                    'regex': r'-?\d+\.\d+'
+                }
+            }
+        }
+        parser = Parser(grammar)
+        result = parser.parse('123.45')
+        self.assertEqual(result['status'], 'success')
+        self.assertEqual(result['ast']['value'], 123.45)
+        self.assertIsInstance(result['ast']['value'], float)
 
 if __name__ == '__main__':
     unittest.main()
