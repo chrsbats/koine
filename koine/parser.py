@@ -34,9 +34,13 @@ def transpile_rule(rule_definition):
     elif rule_type == 'rule':
         return value
     elif rule_type == 'choice':
+        if not value:
+            raise ValueError("A 'choice' rule must have at least one alternative.")
         parts = [transpile_rule(part) for part in value]
         return f'({" / ".join(parts)})'
     elif rule_type == 'sequence':
+        if not value:
+            return '""'
         parts = [transpile_rule(part) for part in value]
         return f'({" ".join(parts)})'
     elif rule_type == 'zero_or_more':
