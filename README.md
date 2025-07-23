@@ -1,10 +1,89 @@
-## Data-Driven Parser Grammar Reference
+# Koine
+
+_A declarative, data-driven parser generator for creating languages, ASTs, and transpilers with simple YAML._
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
+Koine allows you to define a complete language pipeline—from validation to Abstract Syntax Tree (AST) generation to final code transpilation—using a single, human-readable JSON-compatible data structure. It separates the _what_ (your language definition) from the _how_ (the parsing engine).
+
+### Core Features
+
+- **Declarative:** Define complex grammars entirely in YAML data. No code generation step required.
+- **Pipeline-based:** Use Koine for simple validation, structured AST generation, or full transpilation.
+- **Powerful:** Handles operator precedence, left/right associativity, lookaheads, and indentation-based syntax (see Roadmap).
+- **Language Agnostic:** The Koine format is a specification. The engine can be implemented in any language (current implementation is Python).
+
+---
+
+## Installation
+
+```bash
+pip install koine
+```
+
+---
+
+## Quick Start
+
+Let's build a simple calculator that can parse `2 + 3` and transpile it to `(add 2 3)`.
+
+1.  **Create your grammar file, `calc.yaml`:**
+
+    ```yaml
+    # Note: This is a simplified rule for the quick start.
+    # See the full grammar below for handling precedence.
+    start_rule: expression
+    rules:
+      expression:
+        ast: { structure: "left_associative_op" }
+        sequence:
+          - { rule: number }
+          - zero_or_more:
+              sequence:
+                [{ rule: _ }, { rule: add_op }, { rule: _ }, { rule: number }]
+      add_op:
+        ast: { leaf: true }
+        literal: "+"
+        transpile: { value: "add" }
+      number:
+        ast: { leaf: true, type: "number" }
+        transpile: { use: "value" }
+        regex: "\\d+"
+      _:
+        ast: { discard: true }
+        regex: "[ \\t]*"
+    ```
+
+2.  **Use the Koine engine in `main.py`:**
+
+    ```python
+    import yaml
+    from koine import Parser 
+
+    with open("calc.yaml", "r") as f:
+        grammar = yaml.safe_load(f)
+
+    parser = Parser(grammar)
+    result = parser.transpile("2 + 3")
+
+    if result['status'] == 'success':
+        print(f"Input: '2 + 3'")
+        print(f"Output: {result['translation']}")
+    ```
+
+3.  **Run it:**
+    ```
+    Input: '2 + 3'
+    Output: (add 2 3)
+    ```
+
+---
 
 ### Overview
 
-This document describes the YAML-based grammar format for the data-driven parser. The system is designed as a flexible pipeline that can be used for simple validation, structured data extraction (AST generation), or full-scale language translation (transpilation).
+This document describes the JSON compatible grammar format for the Koine data-driven parser. The system is designed as a flexible pipeline that can be used for simple validation, structured data extraction (AST generation), or full-scale language translation (transpilation).
 
-The core philosophy is to separate the _what_ from the _how_. You define _what_ the language looks like and _what_ the output should be in the YAML file, and the Python engine handles _how_ to parse and transform it.
+The core philosophy is to separate the _what_ from the _how_. You define _what_ the language looks like and _what_ the output should be and the Koine engine handles _how_ to parse and transform it.
 
 This guide will walk through the three primary use cases, showing how to add complexity to the grammar definition at each stage using a calculator as a running example.
 
@@ -325,15 +404,11 @@ with open("full_calculator_grammar.yaml", "r") as f:
     grammar = yaml.safe_load(f)
 
 parser = Parser(grammar)
-transpiler = Transpiler(grammar) # We need the transpiler engine now
-
-result = parser.parse("((2 + 3) * 4) ^ 5")
+result = parser.transpile("((2 + 3) * 4) ^ 5")
 
 if result['status'] == 'success':
     print("Parse successful. Transpiling AST...")
-    # Pass the generated AST to the transpiler
-    output_code = transpiler.transpile(result['ast'])
-    print(f"Final Output: {output_code}")
+    print(f"Final Output: {result['translation']}")
 ```
 
 **Final Output:**
@@ -401,3 +476,25 @@ The `transpile` block controls how a finished AST node is converted into the fin
 | `template` | Uses a Python f-string-like template to generate the output. Placeholders like `{repo}` are filled in from the AST node's named children.          | `transpile: { template: "(call {func} {args})" }` |
 | `use`      | Uses a specific property from the AST node as the output. `"use: "value"` is for numbers. `"use: "text"` is for identifiers or string literals.    | `transpile: { use: "value" }`                     |
 | `value`    | Provides a hardcoded string value as the output for this node. This is perfect for converting operators like `+` into function names like `"add"`. | `transpile: { value: "add" }`                     |
+
+## Roadmap
+
+See our `TODO.md` for planned features, including:
+
+- Integrated Stateful Lexer for indentation-based languages.
+
+## Author
+
+The Koine engine was developed by **Chris Bates**.
+
+- https://github.com/chrsbats
+
+## Acknowledgements
+
+This project was made possible by the foundational ideas and early conceptual prototypes developed by **Adam Griffiths**. Their insights into creating a fully data-driven parsing pipeline were instrumental in shaping the final architecture and philosophy of Koine.
+
+- https://github.com/adamlwgriffiths
+
+## License
+
+This project is licensed under the MIT License. See the `LICENSE` file for details.

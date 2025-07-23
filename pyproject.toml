@@ -1,0 +1,36 @@
+# This section tells pip what tools to use to build your package.
+# It's standard boilerplate; you can just copy it.
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+# This is the main section for your project's metadata.
+[project]
+name = "koine"
+version = "0.8.0"
+authors = [
+  { name="Chris Bates", email="1314008+chrsbats@users.noreply.github.com" },
+]
+description = "A declarative, data-driven parser generator for creating languages, ASTs, and transpilers."
+readme = "README.md"
+license = { file="LICENSE" }
+requires-python = ">=3.9"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Software Development :: Compilers",
+    "Topic :: Text Processing :: General",
+]
+
+# These are the libraries your project depends on.
+# pip will automatically install these when it installs your package.
+dependencies = [
+    "parsimonious",
+    "pyyaml",
+]
+
+# These URLs will show up on the PyPI project page.
+[project.urls]
+"Homepage" = "https://github.com/chrsbats/koine"
+"Bug Tracker" = "https://github.com/chrsbats/koine/issues"

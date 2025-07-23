@@ -1,9 +1,12 @@
-from parser import Parser, Transpiler
+from koine.parser import Parser, Transpiler
 import yaml
 import json
 
+from pathlib import Path
+TESTS_DIR = Path(__file__).parent
+
 def test_calc():
-    with open("calculator_grammar.yaml", "r") as f:
+    with open(TESTS_DIR / "calculator_grammar.yaml", "r") as f:
         my_grammar = yaml.safe_load(f)
     
     my_parser = Parser(my_grammar)
@@ -71,7 +74,7 @@ def test_calc():
         print(f"Parse Error: {parse_result['message']}")
 
 def test_advanced():
-    with open("advanced_grammar.yaml", "r") as f:
+    with open(TESTS_DIR / "advanced_grammar.yaml", "r") as f:
         my_grammar = yaml.safe_load(f)
 
     my_parser = Parser(my_grammar)

@@ -1,5 +1,3 @@
-import json
-import yaml
 from bisect import bisect_right
 from parsimonious.grammar import Grammar
 from parsimonious.nodes import NodeVisitor
@@ -135,7 +133,7 @@ class AstBuilderVisitor(NodeVisitor):
                 base_node['value'] = int(val) if val.is_integer() else val
             return base_node
         
-        # --- THE FINAL, ROBUST NAMED-CHILD LOGIC ---
+        
         named_children = {}
         sequence_def = rule_def.get('sequence', [])
         
@@ -143,7 +141,7 @@ class AstBuilderVisitor(NodeVisitor):
         for part in sequence_def:
             is_lookahead = 'positive_lookahead' in part or 'negative_lookahead' in part
             
-            # This is the corrected discard check.
+            
             is_discarded = False
             if 'ast' in part and part['ast'].get('discard'):
                 is_discarded = True
@@ -165,7 +163,7 @@ class AstBuilderVisitor(NodeVisitor):
         return base_node
 
 # ==============================================================================
-# 4. AST-TO-STRING TRANSPILER (Final, Corrected Version)
+# 4. AST-TO-STRING TRANSPILER
 # ==============================================================================
 class Transpiler:
     def __init__(self, grammar_dict: dict):
