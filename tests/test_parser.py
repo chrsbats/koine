@@ -391,6 +391,74 @@ class TestKoineGrammarGeneration(unittest.TestCase):
         }
         self.assertEqual(result['ast'], expected_ast)
 
+    def test_backtracking_in_choice(self):
+        """
+        Tests that if the first rule in a choice partially matches
+        and then fails, the parser correctly backtracks and tries
+        the next choice.
+        """
+        grammar = {
+            'start_rule': 'expression',
+            'rules': {
+                'expression': {
+                    'ast': {'promote': True},
+                    'choice': [
+                        # This rule for 'ab' will be tried first
+                        {'sequence': [
+                            {'literal': 'a', 'ast': {'tag': 'a'}},
+                            {'literal': 'b', 'ast': {'tag': 'b'}}
+                        ]},
+                        # This rule for 'ac' should be tried on backtrack
+                        {'sequence': [
+                            {'literal': 'a', 'ast': {'tag': 'a'}},
+                            {'literal': 'c', 'ast': {'tag': 'c'}}
+                        ]}
+                    ]
+                }
+            }
+        }
+        parser = Parser(grammar)
+        result = parser.parse('ac')
+        self.assertEqual(result['status'], 'success')
+        # The AST should be the result of the second choice, `ac`.
+        # The bug would result in a parse failure or an incorrect AST.
+        expected_ast = [
+            {'tag': 'a', 'text': 'a', 'line': 1, 'col': 1},
+            {'tag': 'c', 'text': 'c', 'line': 1, 'col': 2}
+        ]
+        self.assertEqual(result['ast'], expected_ast)
+
+    def test_named_nullable_rule_produces_empty_list(self):
+        """
+        Tests that a named rule that can match an empty sequence
+        produces an empty list `[]` as its result, not `[None]`.
+        """
+        grammar = {
+            'start_rule': 'program',
+            'rules': {
+                'program': {
+                    'ast': {'tag': 'program'},
+                    'sequence': [{
+                        'ast': {'name': 'items'},
+                        'choice': [
+                            {'literal': 'a'},
+                            {'sequence': []} # The empty choice
+                        ]
+                    }]
+                }
+            }
+        }
+        parser = Parser(grammar)
+        result = parser.parse('')
+        self.assertEqual(result['status'], 'success')
+        expected_ast = {
+            'tag': 'program', 'text': '', 'line': 1, 'col': 1,
+            'children': {
+                'items': []
+            }
+        }
+        self.assertEqual(result['ast'], expected_ast)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -1,4 +1,5 @@
 from bisect import bisect_right
+import json
 from parsimonious.grammar import Grammar
 from parsimonious.nodes import NodeVisitor
 from parsimonious.expressions import Literal, Quantifier, Lookahead
@@ -78,9 +79,11 @@ class LineColumnFinder:
         """Returns (line, column) for a given character offset."""
         if offset < 0:
             offset = 0
-        if offset >= len(self.text):
-            offset = len(self.text) - 1
+        if offset > len(self.text):
+            offset = len(self.text)
+
         line_num = bisect_right(self.line_starts, offset)
+        # line_num is 1-based. self.line_starts is 0-indexed.
         col_num = offset - self.line_starts[line_num - 1] + 1
         return line_num, col_num
 
@@ -97,6 +100,8 @@ class AstBuilderVisitor(NodeVisitor):
         rule_name = node.expr_name
         if rule_name not in self.grammar_rules:
             if isinstance(node.expr, Literal):
+                if not node.text:
+                    return []
                 line, col = self.finder.find(node.start)
                 return { "tag": "literal", "text": node.text, "line": line, "col": col }
             if isinstance(node.expr, Lookahead):
@@ -106,7 +111,8 @@ class AstBuilderVisitor(NodeVisitor):
                     return None
                 if node.expr.max == 1:
                     return visited_children[0]
-            return visited_children
+            # For other anonymous nodes (sequences, choices), filter out discarded children
+            return [c for c in visited_children if c is not None]
         
         rule_def = self.grammar_rules.get(rule_name, {})
         ast_config = rule_def.get('ast', {})
@@ -114,9 +120,29 @@ class AstBuilderVisitor(NodeVisitor):
         
         children = [c for c in visited_children if c is not None]
         
+        # Treat rules that directly wrap a terminal as leaves, even if `leaf: true` isn't specified.
+        is_simple_terminal_rule = 'literal' in rule_def or 'regex' in rule_def
+        if ast_config.get('leaf') or is_simple_terminal_rule:
+            line, col = self.finder.find(node.start)
+            base_node = {"tag": ast_config.get('tag', rule_name), "text": node.text, "line": line, "col": col}
+            if ast_config.get('type') == 'number':
+                val = float(node.text)
+                base_node['value'] = int(val) if val.is_integer() else val
+            elif ast_config.get('type') == 'bool':
+                base_node['value'] = node.text.lower() == 'true'
+            elif ast_config.get('type') == 'null':
+                base_node['value'] = None
+            return base_node
+        
         if ast_config.get('promote'):
             promoted_item = children[0] if children else None
-            if isinstance(promoted_item, list): return promoted_item[2] if len(promoted_item) > 2 else None
+            # Special case to handle `( expression )` style rules, which create a list of 3 nodes.
+            # We check for surrounding literals to avoid accidentally grabbing the wrong element
+            # from a different kind of list.
+            if isinstance(promoted_item, list) and len(promoted_item) == 3 and \
+               isinstance(promoted_item[0], dict) and promoted_item[0].get('tag') == 'literal' and \
+               isinstance(promoted_item[2], dict) and promoted_item[2].get('tag') == 'literal':
+                return promoted_item[1]
             return promoted_item
         
         structure_type = ast_config.get('structure')
@@ -139,16 +165,6 @@ class AstBuilderVisitor(NodeVisitor):
         
         line, col = self.finder.find(node.start)
         base_node = {"tag": ast_config.get('tag', rule_name), "text": node.text, "line": line, "col": col}
-        
-        if ast_config.get('leaf'):
-            if ast_config.get('type') == 'number':
-                val = float(node.text)
-                base_node['value'] = int(val) if val.is_integer() else val
-            elif ast_config.get('type') == 'bool':
-                base_node['value'] = node.text.lower() == 'true'
-            elif ast_config.get('type') == 'null':
-                base_node['value'] = None
-            return base_node
         
         
         named_children = {}
@@ -233,11 +249,73 @@ class Transpiler:
 class Parser:
     """The main entry point that orchestrates the parsing process."""
     def __init__(self, grammar_dict: dict):
-        self.grammar_string = transpile_grammar(grammar_dict)
+        self.grammar_dict = self._normalize_grammar(grammar_dict)
+        self.grammar_string = transpile_grammar(self.grammar_dict)
         self.grammar = Grammar(self.grammar_string)
-        self.grammar_dict = grammar_dict
-        self.start_rule = grammar_dict.get('start_rule', 'start')
+        self.start_rule = self.grammar_dict.get('start_rule', 'start')
         self.transpiler = Transpiler(self.grammar_dict)
+
+    def _normalize_grammar(self, grammar_dict: dict):
+        """
+        Recursively walks the grammar and gives names to any anonymous
+        (inline) rule definitions that have an `ast` block. This is
+        necessary so that the AstBuilderVisitor can find the `ast` config
+        for these rules by name.
+        """
+        # Deep copy to avoid modifying the user's original dict
+        new_grammar = json.loads(json.dumps(grammar_dict))
+        rules = new_grammar.get('rules', {})
+        anon_counter = 0
+
+        def is_inline_def_with_ast(d):
+            if not isinstance(d, dict) or 'ast' not in d:
+                return False
+
+            # An inline definition that ONLY specifies a name is for structuring the parent,
+            # not for creating a new named anonymous rule.
+            if list(d['ast'].keys()) == ['name']:
+                return False
+            
+            # An inline definition cannot be a rule reference.
+            if 'rule' in d:
+                return False
+
+            rule_keys = {
+                'literal', 'regex', 'choice', 'sequence', 'zero_or_more', 
+                'one_or_more', 'optional', 'positive_lookahead', 'negative_lookahead'
+            }
+            # It must contain one of the core grammar keys.
+            return any(key in d for key in rule_keys)
+
+        def walker(node):
+            nonlocal anon_counter
+            if isinstance(node, list):
+                for i, item in enumerate(node):
+                    if is_inline_def_with_ast(item):
+                        anon_counter += 1
+                        new_rule_name = f"__koine_anon_{anon_counter}"
+                        rules[new_rule_name] = item
+                        node[i] = {'rule': new_rule_name}
+                    else:
+                        walker(item)
+            elif isinstance(node, dict):
+                for key, value in list(node.items()):
+                    if key in ['ast', 'transpile']:
+                        continue
+                    
+                    if is_inline_def_with_ast(value):
+                        anon_counter += 1
+                        new_rule_name = f"__koine_anon_{anon_counter}"
+                        rules[new_rule_name] = value
+                        node[key] = {'rule': new_rule_name}
+                    else:
+                        walker(value)
+
+        # Start walking from inside each of the top-level rule definitions
+        rules_map = new_grammar.get('rules', {})
+        for rule_def in list(rules_map.values()):
+            walker(rule_def)
+        return new_grammar
 
     def parse(self, text: str, rule: str = None):
         start_rule = rule if rule is not None else self.start_rule
