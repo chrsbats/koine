@@ -101,8 +101,11 @@ class AstBuilderVisitor(NodeVisitor):
                 return { "tag": "literal", "text": node.text, "line": line, "col": col }
             if isinstance(node.expr, Lookahead):
                 return None
-            if isinstance(node.expr, Quantifier) and node.expr.min == 0 and node.expr.max == 1:
-                return visited_children[0] if visited_children else None
+            if isinstance(node.expr, Quantifier):
+                if not visited_children:
+                    return None
+                if node.expr.max == 1:
+                    return visited_children[0]
             return visited_children
         
         rule_def = self.grammar_rules.get(rule_name, {})
@@ -119,6 +122,8 @@ class AstBuilderVisitor(NodeVisitor):
         structure_type = ast_config.get('structure')
         if structure_type == 'left_associative_op':
             left = children[0]
+            if len(children) < 2:
+                return left
             for group in children[1]:
                 clean_group = [item for item in group if item is not None]
                 op, right = clean_group[0], clean_group[1]

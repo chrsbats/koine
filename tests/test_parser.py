@@ -348,5 +348,49 @@ class TestKoineGrammarGeneration(unittest.TestCase):
         self.assertEqual(result['ast']['value'], 123.45)
         self.assertIsInstance(result['ast']['value'], float)
 
+    def test_quantifier_empty_match_is_omitted_from_ast(self):
+        """
+        Tests that a quantifier (zero_or_more, optional) that matches
+        zero times does not add an empty list to the parent's children,
+        which would clutter the AST.
+        """
+        grammar = {
+            'start_rule': 'main',
+            'rules': {
+                'main': {
+                    'ast': {'tag': 'main'},
+                    'sequence': [
+                        {'rule': 'a'},
+                        {'zero_or_more': {'rule': 'b'}},
+                        {'rule': 'c'}
+                    ]
+                },
+                'a': {'literal': 'a', 'ast': {'tag': 'a', 'leaf': True}},
+                'b': {'literal': 'b', 'ast': {'tag': 'b', 'leaf': True}},
+                'c': {'literal': 'c', 'ast': {'tag': 'c', 'leaf': True}}
+            }
+        }
+        parser = Parser(grammar)
+        # Parse 'ac', so 'b' is not matched by zero_or_more
+        result = parser.parse('ac')
+        self.assertEqual(result['status'], 'success')
+
+        # Current (undesired) behavior would produce children like:
+        # [ {'tag': 'a', ...}, [], {'tag': 'c', ...} ]
+
+        # Desired behavior:
+        expected_ast = {
+            'tag': 'main',
+            'text': 'ac',
+            'line': 1,
+            'col': 1,
+            'children': [
+                {'tag': 'a', 'text': 'a', 'line': 1, 'col': 1},
+                {'tag': 'c', 'text': 'c', 'line': 1, 'col': 2}
+            ]
+        }
+        self.assertEqual(result['ast'], expected_ast)
+
+
 if __name__ == '__main__':
     unittest.main()
