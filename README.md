@@ -102,8 +102,15 @@ Let's build a simple calculator that can parse `2 + 3` and transpile it to `(add
     parse_result = parser.parse(source_code)
 
     if parse_result['status'] == 'success':
-        translation = transpiler.transpile(parse_result['ast'])
-        print(f"Input: '{source_code}'")
+        # The parser produces a structured AST (as a dictionary)
+        ast = parse_result['ast']
+        print("Intermediate AST:")
+        import json
+        print(json.dumps(ast, indent=2))
+
+        # The transpiler consumes the AST to produce the final string
+        translation = transpiler.transpile(ast)
+        print(f"\nInput: '{source_code}'")
         print(f"Output: {translation}")
     else:
         print(f"Error: {parse_result['message']}")
@@ -111,6 +118,31 @@ Let's build a simple calculator that can parse `2 + 3` and transpile it to `(add
 
 4.  **Run it:**
     ```
+    Intermediate AST:
+    {
+      "tag": "binary_op",
+      "op": {
+        "tag": "add_op",
+        "text": "+",
+        "line": 1,
+        "col": 3
+      },
+      "left": {
+        "tag": "number",
+        "text": "2",
+        "line": 1,
+        "col": 1,
+        "value": 2
+      },
+      "right": {
+        "tag": "number",
+        "text": "3",
+        "line": 1,
+        "col": 5,
+        "value": 3
+      }
+    }
+    
     Input: '2 + 3'
     Output: (add 2 3)
     ```
@@ -418,6 +450,30 @@ if parse_result['status'] == 'success':
     print(f"Final Output: {translation}")
 ```
 
+The parser produces the following AST, which becomes the input for the transpiler. Note the `op` node with `"text": "-"` which will be handled by the `cases` directive in the transpiler.
+
+```json
+{
+  "tag": "binary_op",
+  "op": { "tag": "power_op", "text": "^", "line": 1, "col": 17 },
+  "left": {
+    "tag": "binary_op",
+    "op": { "tag": "mul_op", "text": "*", "line": 1, "col": 11 },
+    "left": {
+      "tag": "binary_op",
+      "op": { "tag": "add_op", "text": "-", "line": 1, "col": 5 },
+      "left": { "tag": "number", "text": "2", "line": 1, "col": 3, "value": 2 },
+      "right": { "tag": "number", "text": "3", "line": 1, "col": 7, "value": 3 },
+      "line": 1, "col": 5
+    },
+    "right": { "tag": "number", "text": "4", "line": 1, "col": 13, "value": 4 },
+    "line": 1, "col": 11
+  },
+  "right": { "tag": "number", "text": "5", "line": 1, "col": 19, "value": 5 },
+  "line": 1, "col": 17
+}
+```
+
 **Final Output:**
 
 ```
@@ -455,6 +511,59 @@ rules:
     # Grammar rules now match abstract tokens, not raw text
     sequence: [ { token: "DEF" }, { rule: identifier }, ... ]
   ...
+```
+
+Parsing the Python code with `py_parser.yaml` yields the following AST. This structure, with its named children like `iterator`, `limit`, and `body`, is what the transpiler will transform.
+
+```json
+{
+  "tag": "function_definition",
+  "children": {
+    "name": { "tag": "NAME", "text": "f", "line": 1, "col": 5 },
+    "params": {
+      "tag": "parameters",
+      "children": [
+        { "tag": "NAME", "text": "x", "line": 1, "col": 7 },
+        { "tag": "NAME", "text": "y", "line": 1, "col": 10 }
+      ]
+    },
+    "body": [
+      {
+        "tag": "assignment",
+        "children": {
+          "target": { "tag": "NAME", "text": "a", "line": 2, "col": 5 },
+          "value": { "tag": "NUMBER", "value": 0, "line": 2, "col": 9 }
+        }
+      },
+      {
+        "tag": "for_loop",
+        "children": {
+          "iterator": { "tag": "NAME", "text": "i", "line": 3, "col": 9 },
+          "limit": { "tag": "NAME", "text": "y", "line": 3, "col": 21 },
+          "body": [
+            {
+              "tag": "assignment",
+              "children": {
+                "target": { "tag": "NAME", "text": "a", "line": 4, "col": 9 },
+                "value": {
+                  "tag": "binary_op",
+                  "left": { "tag": "NAME", "text": "a", "line": 4, "col": 13 },
+                  "right": { "tag": "NAME", "text": "x", "line": 4, "col": 17 }
+                }
+              }
+            }
+          ]
+        }
+      },
+      {
+        "tag": "return",
+        "children": {
+          "value": { "tag": "NAME", "text": "a", "line": 5, "col": 12 }
+        }
+      }
+    ]
+  }
+}
 ```
 
 **`py_to_js_transpiler.yaml`**
@@ -534,6 +643,64 @@ This is accomplished in the transpiler grammar using `indent: true` on rules tha
 
 #### Example: Transpiling JavaScript to Python
 
+Parsing the JavaScript code with `js_parser.yaml` yields an AST. The `js_to_py_transpiler.yaml` will use the `indent` directive when processing the `statements` nodes to create a correctly indented Python code block.
+
+```json
+{
+  "tag": "function_definition",
+  "children": {
+    "name": { "tag": "NAME", "text": "f" },
+    "params": {
+      "tag": "parameters",
+      "children": [
+        { "tag": "NAME", "text": "x" },
+        { "tag": "NAME", "text": "y" }
+      ]
+    },
+    "body": {
+      "tag": "statements",
+      "children": [
+        {
+          "tag": "assignment",
+          "children": {
+            "target": { "tag": "NAME", "text": "a" },
+            "value": { "tag": "NUMBER", "value": 0 }
+          }
+        },
+        {
+          "tag": "for_loop",
+          "children": {
+            "limit": { "tag": "NAME", "text": "y" },
+            "body": {
+              "tag": "statements",
+              "children": [
+                {
+                  "tag": "assignment",
+                  "children": {
+                    "target": { "tag": "NAME", "text": "a" },
+                    "value": {
+                      "tag": "binary_op",
+                      "left": { "tag": "NAME", "text": "a" },
+                      "right": { "tag": "NAME", "text": "x" }
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        },
+        {
+          "tag": "return",
+          "children": {
+            "value": { "tag": "NAME", "text": "a" }
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
 **`js_to_py_transpiler.yaml`**
 ```yaml
 rules:
@@ -595,106 +762,13 @@ def f(x, y):
 
 ---
 
-### Full Grammar and Directive Reference
+## Documentation
 
-#### Grammar Structure Keys
+For a complete guide to Koine's features, including detailed explanations and examples for every directive, please see the dedicated documentation files:
 
-These keys define the actual parsing logic.
+-   **[PARSING.md](./PARSING.md)**: Covers everything related to parsing text into an AST, from grammar basics to advanced features like lookaheads and lexer-based tokenization.
 
-| Key                  | Description                                                                               | Value Type      | Example                                    |
-| :------------------- | :---------------------------------------------------------------------------------------- | :-------------- | :----------------------------------------- |
-| `literal`            | Matches an exact string of text.                                                          | `string`        | `{ literal: "if" }`                        |
-| `regex`              | Matches text against a regular expression.                                                | `string`        | `{ regex: "-?\\d+" }`                      |
-| `rule`               | References another rule by its name.                                                      | `string`        | `{ rule: expression }`                     |
-| `token`              | Matches a token by type name (used when a `lexer` is defined).                            | `string`        | `{ token: "NAME" }`                        |
-| `sequence`           | Matches a series of rules in a specific order.                                            | `list` of rules | `{ sequence: [ {rule: A}, {rule: B} ] }`   |
-| `choice`             | Matches one of several possible rules. Tries them in order.                               | `list` of rules | `{ choice: [ {rule: A}, {rule: B} }`       |
-| `zero_or_more`       | Matches the given rule zero or more times (`*`).                                          | A single rule   | `{ zero_or_more: {rule: A} }`              |
-| `one_or_more`        | Matches the given rule one or more times (`+`).                                           | A single rule   | `{ one_or_more: {rule: A} }`               |
-| `optional`           | Matches the given rule zero or one time (`?`).                                            | A single rule   | `{ optional: {rule: A} }`                  |
-| `positive_lookahead` | Asserts that the text ahead matches the rule, but does not consume text (`&`).            | A single rule   | `{ positive_lookahead: {literal: "TO"} }`  |
-| `negative_lookahead` | Asserts that the text ahead does **not** match the rule, but does not consume text (`!`). | A single rule   | `{ negative_lookahead: {literal: "END"} }` |
-
-#### The `lexer` Block (Parser Grammar)
-
-A top-level key in the parser grammar that defines how to tokenize the input string before parsing.
-
-| Key      | Description                                                                                              | Value Type     |
-| :------- | :------------------------------------------------------------------------------------------------------- | :------------- |
-| `tokens` | An ordered list of token specifications. The first one to match the longest string is chosen.            | `list` of dict |
-
-Each item in the `tokens` list is a dictionary:
-
-| Key      | Description                                                                        |
-| :------- | :--------------------------------------------------------------------------------- |
-| `regex`  | The regular expression to match a token.                                           |
-| `token`  | The type name for the created token (e.g., `NAME`).                                |
-| `action` | Special behavior. `skip` discards the token; `handle_indent` manages indentation.  |
-| `ast`    | An `ast` block to attach properties (like `type: "number"`) directly to the token. |
-
-#### The `ast` Block (Parser Grammar)
-
-The `ast` block controls how the Abstract Syntax Tree is constructed for a given rule.
-
-| Key         | Description                                                                                                                                         | Example                                     |
-| :---------- | :-------------------------------------------------------------------------------------------------------------------------------------------------- | :------------------------------------------ |
-| `tag`       | Renames the node in the final AST. Useful for creating cleaner, more abstract node types.                                                           | `ast: { tag: "clone_to" }`                  |
-| `discard`   | Throws away the node created by this rule. It will not appear in the AST. Essential for whitespace, comments, and syntactic sugar.                  | `ast: { discard: true }`                    |
-| `promote`   | Replaces the current node with its child node in the AST. This is used to simplify the tree by removing unnecessary intermediate nodes.             | `ast: { promote: true }`                    |
-| `leaf`      | Marks this as a terminal node in the AST. It will have no children, even if it's composed of other rules. Its `text` and `value` are preserved.     | `ast: { leaf: true }`                       |
-| `type`      | Adds a data type hint to a leaf node. Supported types: `number`, `bool`, `null`.                                                                    | `ast: { leaf: true, type: "number" }`       |
-| `name`      | In a `sequence`, assigns a name to a specific child. This causes the parent's `children` attribute in the AST to be a dictionary instead of a list. | `{ rule: path, ast: { name: "repo" } }`     |
-| `structure` | A powerful directive that automatically builds complex tree structures.                                                                             | `ast: { structure: "left_associative_op" }` |
-
-##### Why Use `tag`?
-
-The `tag` directive provides three powerful advantages: **decoupling, abstraction, and clarity**.
-
-1.  **Decoupling Grammar from AST:** The name of a rule often describes its **syntactic role** (what it does for parsing, like `term` or `factor`), while the tag describes its **semantic meaning** (what it _is_, like a `binary_op`). This allows the grammar to be structured for correct parsing (e.g., operator precedence) while producing a simple, semantic AST for the next stage.
-
-2.  **Creating Abstract Concepts:** A `tag` allows you to create a single, unified AST node type from multiple different syntactic forms. For example, a language might have `let_statement` and `const_statement` rules, but both can be given the tag `variable_declaration`, simplifying the code that consumes the AST.
-
-3.  **Improving Grammar Readability:** Sometimes, a rule needs a long, descriptive name to be clear (e.g., `statement_ending_with_optional_semicolon`), but you want a short, concise name in your AST (e.g., `statement`).
-
-##### `structure` Types:
-
-- `"left_associative_op"`: Automatically builds a left-leaning binary operation tree.
-- `"right_associative_op"`: Automatically builds a right-leaning binary operation tree.
-- **Dictionary**: A dictionary defining a custom structure.
-    - `tag`: The tag for the new node.
-    - `map_children`: A dictionary mapping parts of the rule to named children in the new AST node. E.g., `map_children: { name: { from_child: 1 } }`. This makes the mapping robust against optional/discarded children.
-
-#### The Transpiler Grammar
-
-The transpiler grammar is a separate file that defines how to convert a finished AST into an output string. It contains a single top-level `rules` key. Each key under `rules` corresponds to an AST node `tag`.
-
-| Key                  | Description                                                                                                                                                                     |
-| :------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `template`           | Uses a Python f-string-like template for output. Placeholders like `{repo}` are filled in from the AST node's `children`, or special keys like `{left}`, `{right}`, and `{op}`. |
-| `use`                | Uses a specific property from the AST node. `"use: "value"` for numbers/bools, `"use: "text"` for identifiers/strings.                                                          |
-| `value`              | Provides a hardcoded string as the output for this node. Perfect for converting operators into function names.                                                                  |
-| `cases`              | A list of conditional rules to select a template, providing if/else-if/else logic. See below for details.                                                                       |
-| `state_set`          | A dictionary to set variables in the transpiler's state after the node is processed. E.g., `{ "vars.{name}": True }`.                                                            |
-| `join_children_with` | For nodes with list-based children, specifies the separator (e.g., `", "` or `"\n"`).                                                                                            |
-| `indent`             | If `true`, the output of this rule's children will be indented one level. Used for generating code for indented languages like Python.                                           |
-
-##### Conditional Transpilation with `cases`
-
-The `cases` block is a list of dictionaries, evaluated in order. The first one that matches is used.
-
--   A case dictionary can have an `if` and a `then` key, or a single `default` key.
--   The `if` key holds a **condition dictionary**:
-    -   `path`: A dot-notation path to a value to check (e.g., `node.text` or `state.vars.{name}`).
-    -   `equals`: (Optional) If present, checks for equality with the value at `path`. If omitted, checks for existence (truthiness).
-    -   `negate`: (Optional) If `true`, inverts the result of the check.
-
-Example:
-```yaml
-cases:
-  - if: { path: 'state.vars.{target}', negate: true }
-    then: "let {target} = {value};"
-  - default: "{target} = {value};"
-```
+-   **[TRANSPILING.md](./TRANSPILING.md)**: Covers everything related to transforming an AST into text, including conditional logic, state management, and generating indented output.
 
 ## Author
 
