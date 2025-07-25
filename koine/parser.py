@@ -140,7 +140,13 @@ def transpile_rule(rule_definition, is_token_grammar=False):
             return '("")?' if rule_type == 'sequence' else (_ for _ in ()).throw(ValueError("Choice cannot be empty"))
         parts = [transpile_rule(part, is_token_grammar) for part in value]
         joiner = " / " if rule_type == 'choice' else " "
-        return f'({joiner.join(parts)})'
+        joined_parts = joiner.join(parts)
+        # For a sequence of one item, Parsimonious optimizes `(foo)` to just `foo`.
+        # This breaks AST construction, as the sequence rule's AST config is ignored.
+        # We add a no-op (`("")?`) to prevent this optimization.
+        if rule_type == 'sequence' and len(parts) == 1:
+            return f'({joined_parts} ("")?)'
+        return f'({joined_parts})'
     else:  # Quantifiers and lookaheads
         # Postfix operators
         if rule_type in ['zero_or_more', 'one_or_more', 'optional']:
@@ -240,9 +246,14 @@ class AstBuilderVisitor(NodeVisitor):
                              "line": token.line,
                              "col": token.col}
 
-                if spec_ast.get('type') == 'number':
+                spec_type = spec_ast.get('type')
+                if spec_type == 'number':
                     val = float(token.value)
                     base_node['value'] = int(val) if val.is_integer() else val
+                elif spec_type == 'bool':
+                    base_node['value'] = token.value.lower() == 'true'
+                elif spec_type == 'null':
+                    base_node['value'] = None
                 else:
                     base_node['value'] = token.value
                 return base_node
@@ -278,6 +289,18 @@ class AstBuilderVisitor(NodeVisitor):
             # If a choice was promoted, its results might be in a nested list
             if len(children) == 1 and isinstance(children[0], list):
                 children = children[0]
+
+            # After potentially un-nesting a choice, we might still have a list
+            # of children from a sequence that contains a mix of single nodes and
+            # sub-lists (from quantifiers). We need to flatten this list.
+            if isinstance(children, list):
+                flat_list = []
+                for child in children:
+                    if isinstance(child, list):
+                        flat_list.extend(child)
+                    else:
+                        flat_list.append(child)
+                children = flat_list
 
             # Special case for `( expression )` style rules.
             if len(children) == 3 and \
@@ -388,7 +411,21 @@ class AstBuilderVisitor(NodeVisitor):
         elif children is None or not children:
              base_node['children'] = []
         else:
-             base_node['children'] = unwrapped_children
+            # If we have a list of children, flatten any sub-lists. This is to
+            # correctly handle promoted quantifiers (e.g. `zero_or_more`) which
+            # return a list of nodes that should be spliced into the parent's
+            # list of children, not appended as a nested list.
+            if isinstance(unwrapped_children, list):
+                flat_list = []
+                for child in unwrapped_children:
+                    if isinstance(child, list):
+                        flat_list.extend(child)
+                    else:
+                        flat_list.append(child)
+                base_node['children'] = flat_list
+            else:
+                # This is likely a single node.
+                base_node['children'] = unwrapped_children
 
         return base_node
 
@@ -568,8 +605,8 @@ class Parser:
 
     def __init__(self, grammar_dict: dict):
         self.grammar_dict = self._normalize_grammar(grammar_dict)
-        self._lint_grammar()
         self.is_token_grammar = 'lexer' in self.grammar_dict
+        self._lint_grammar()
         
         if self.is_token_grammar:
             self.lexer = StatefulLexer(self.grammar_dict['lexer'])
@@ -590,6 +627,7 @@ class Parser:
         unreachable rules.
         """
         self._check_for_unreachable_rules()
+        self._check_for_always_empty_rules()
 
     def _check_for_unreachable_rules(self):
         """
@@ -642,6 +680,83 @@ class Parser:
         unreachable = all_rules - reachable
         if unreachable:
             raise ValueError(f"Unreachable rules detected: {', '.join(sorted(list(unreachable)))}")
+
+    def _is_def_always_empty(self, rule_def, memo):
+        if not isinstance(rule_def, dict):
+            return False
+
+        ast_config = rule_def.get('ast', {})
+        if ast_config.get('discard'): return True
+        if 'structure' in ast_config: return False
+
+        if 'rule' in rule_def: return self._is_rule_always_empty(rule_def['rule'], memo)
+        
+        if self.is_token_grammar and 'token' in rule_def:
+            token_type = rule_def['token']
+            for spec in self.grammar_dict.get('lexer', {}).get('tokens', []):
+                if spec.get('token') == token_type:
+                    return spec.get('action') == 'skip' or spec.get('ast', {}).get('discard', False)
+            return False
+
+        if 'literal' in rule_def or 'regex' in rule_def or ast_config.get('leaf'):
+            return False
+
+        if 'positive_lookahead' in rule_def or 'negative_lookahead' in rule_def:
+            return True
+        
+        if 'choice' in rule_def:
+            return all(self._is_def_always_empty(alt, memo) for alt in rule_def['choice'])
+
+        if 'sequence' in rule_def:
+            if any('name' in part.get('ast', {}) for part in rule_def['sequence']):
+                return False
+            return all(self._is_def_always_empty(part, memo) for part in rule_def['sequence'])
+
+        for quantifier in ['one_or_more', 'zero_or_more', 'optional']:
+            if quantifier in rule_def:
+                return self._is_def_always_empty(rule_def[quantifier], memo)
+
+        return False
+
+    def _is_rule_always_empty(self, rule_name, memo):
+        if rule_name in memo:
+            return memo[rule_name]
+        
+        if rule_name not in self.grammar_dict['rules']:
+            return False
+
+        memo[rule_name] = False
+        
+        rule_def = self.grammar_dict['rules'][rule_name]
+        is_empty = self._is_def_always_empty(rule_def, memo)
+        
+        memo[rule_name] = is_empty
+        return is_empty
+
+    def _check_for_always_empty_rules(self):
+        """
+        Checks for rules that are not explicitly 'discard' but will always
+        produce an empty AST node due to their structure.
+        """
+        memo = {}
+        implicitly_empty_rules = []
+        for rule_name, rule_def in self.grammar_dict['rules'].items():
+            if rule_def.get('ast', {}).get('discard'):
+                continue
+            
+            is_lookahead_rule = 'positive_lookahead' in rule_def or 'negative_lookahead' in rule_def
+            if is_lookahead_rule:
+                continue
+            
+            if self._is_rule_always_empty(rule_name, memo):
+                implicitly_empty_rules.append(rule_name)
+        
+        if implicitly_empty_rules:
+            raise ValueError(
+                "The following rules will always produce an empty AST node, which may be unintentional. "
+                "If this is intended, add `ast: { discard: true }` to the rule definition. "
+                f"Rules: {', '.join(sorted(implicitly_empty_rules))}"
+            )
 
     def _normalize_grammar(self, grammar_dict: dict):
         """

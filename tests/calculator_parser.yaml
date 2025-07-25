@@ -40,32 +40,28 @@ rules:
     choice:
       - { rule: number }
       - sequence:
-          - { literal: "(" }
+          - { literal: "(", ast: { discard: true } }
           - { rule: _ }
           - { rule: expression }
           - { rule: _ }
-          - { rule: rparen }
+          - { literal: ")", ast: { discard: true } }
 
   add_op:
-    ast: { promote: true }
+    ast: { leaf: true, tag: "add_op" }
     choice:
-      - { literal: "+", ast: { tag: "add_op" } }
-      - { literal: "-", ast: { tag: "add_op" } }
+      - { literal: "+" }
+      - { literal: "-" }
 
   mul_op:
-    ast: { promote: true }
+    ast: { leaf: true, tag: "mul_op" }
     choice:
-      - { literal: "*", ast: { tag: "mul_op" } }
-      - { literal: "/", ast: { tag: "mul_op" } }
+      - { literal: "*" }
+      - { literal: "/" }
 
   power_op:
     ast: { leaf: true, tag: "power_op" }
     literal: "^"
 
-  rparen:
-    ast: { discard: true }
-    choice:
-      - { literal: ")" }
 
   number:
     ast: { leaf: true, type: "number" }

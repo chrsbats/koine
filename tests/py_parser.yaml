@@ -101,9 +101,11 @@ rules:
 
   expression:
     ast: { promote: true }
-    choice:
-      - { rule: addition }
-      - { rule: term }
+    sequence:
+      - negative_lookahead: { token: "FOR" }
+      - choice:
+          - { rule: addition }
+          - { rule: term }
   
   addition:
     ast:

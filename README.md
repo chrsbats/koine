@@ -48,21 +48,41 @@ Let's build a simple calculator that can parse `2 + 3` and transpile it to `(add
 
 1.  **Create your parser grammar, `parser_calc.yaml`:** This defines the language syntax and how to build an AST.
     ```yaml
+    # A grammar that handles precedence (* before +) and parentheses.
     start_rule: expression
     rules:
       expression:
         ast: { structure: "left_associative_op" }
         sequence:
-          - { rule: number }
+          - { rule: term }
           - zero_or_more:
-              sequence:
-                - { rule: _ }
-                - { rule: add_op }
-                - { rule: _ }
-                - { rule: number }
+              sequence: [ { rule: _ }, { rule: add_op }, { rule: _ }, { rule: term } ]
+      term:
+        ast: { structure: "left_associative_op" }
+        sequence:
+          - { rule: factor }
+          - zero_or_more:
+              sequence: [ { rule: _ }, { rule: mul_op }, { rule: _ }, { rule: factor } ]
+      factor:
+        ast: { promote: true }
+        choice:
+          - { rule: number }
+          - sequence:
+              - { literal: "(", ast: { discard: true } }
+              - { rule: _ }
+              - { rule: expression }
+              - { rule: _ }
+              - { literal: ")", ast: { discard: true } }
       add_op:
-        ast: { leaf: true }
-        literal: "+"
+        ast: { promote: true }
+        choice:
+          - { literal: "+", ast: { tag: "add_op" } }
+          - { literal: "-", ast: { tag: "add_op" } }
+      mul_op:
+        ast: { promote: true }
+        choice:
+          - { literal: "*", ast: { tag: "mul_op" } }
+          - { literal: "/", ast: { tag: "mul_op" } }
       number:
         ast: { leaf: true, type: "number" }
         regex: "\\d+"
@@ -77,7 +97,17 @@ Let's build a simple calculator that can parse `2 + 3` and transpile it to `(add
       binary_op:
         template: "({op} {left} {right})"
       add_op:
-        value: "add"
+        cases:
+          - if: { path: "node.text", equals: "+" }
+            then: "add"
+          - default: "sub"
+      mul_op:
+        cases:
+          - if: { path: "node.text", equals: "*" }
+            then: "mul"
+          - default: "div"
+      power_op:
+        value: "pow"
       number:
         use: "value"
     ```
@@ -98,7 +128,7 @@ Let's build a simple calculator that can parse `2 + 3` and transpile it to `(add
     transpiler = Transpiler(transpiler_grammar)
 
     # 3. Run the pipeline
-    source_code = "2 + 3"
+    source_code = "2 * (3 + 4)"
     parse_result = parser.parse(source_code)
 
     if parse_result['status'] == 'success':
@@ -122,8 +152,8 @@ Let's build a simple calculator that can parse `2 + 3` and transpile it to `(add
     {
       "tag": "binary_op",
       "op": {
-        "tag": "add_op",
-        "text": "+",
+        "tag": "mul_op",
+        "text": "*",
         "line": 1,
         "col": 3
       },
@@ -135,16 +165,32 @@ Let's build a simple calculator that can parse `2 + 3` and transpile it to `(add
         "value": 2
       },
       "right": {
-        "tag": "number",
-        "text": "3",
-        "line": 1,
-        "col": 5,
-        "value": 3
+        "tag": "binary_op",
+        "op": {
+          "tag": "add_op",
+          "text": "+",
+          "line": 1,
+          "col": 8
+        },
+        "left": {
+          "tag": "number",
+          "text": "3",
+          "line": 1,
+          "col": 6,
+          "value": 3
+        },
+        "right": {
+          "tag": "number",
+          "text": "4",
+          "line": 1,
+          "col": 10,
+          "value": 4
+        }
       }
     }
-    
-    Input: '2 + 3'
-    Output: (add 2 3)
+
+    Input: '2 * (3 + 4)'
+    Output: (mul 2 (add 3 4))
     ```
 
 ---

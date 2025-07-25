@@ -589,6 +589,25 @@ class TestKoineGrammarGeneration(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Unreachable rules detected: b, c"):
             Parser(grammar)
 
+    def test_implicitly_empty_rule_raises_error(self):
+        """
+        Tests that a rule that is not explicitly discarded but always
+        produces an empty AST node raises a ValueError during linting.
+        """
+        grammar = {
+            'start_rule': 'main',
+            'rules': {
+                'main': { 'rule': 'empty_one' },
+                'empty_one': {
+                    'sequence': [ {'rule': 'discarded_a'}, {'rule': 'discarded_b'} ]
+                },
+                'discarded_a': { 'literal': 'a', 'ast': {'discard': True} },
+                'discarded_b': { 'literal': 'b', 'ast': {'discard': True} }
+            }
+        }
+        with self.assertRaisesRegex(ValueError, "always produce an empty AST node.*Rules: empty_one, main"):
+            Parser(grammar)
+
     def test_regex_with_double_quotes_works(self):
         """
         Tests that a regex with a double quote works correctly, regardless
@@ -669,6 +688,223 @@ class TestKoineGrammarGeneration(unittest.TestCase):
             Parser(grammar)
         except ValueError as e:
             self.fail(f"Parser initialization failed unexpectedly. The linter should not have run or failed, but got: {e}")
+
+    def test_inline_ast_definition_normalization(self):
+        """
+        Tests that an inline rule definition with an 'ast' block is
+        correctly normalized into a named rule. This is a core feature
+        for writing concise grammars.
+        """
+        grammar = {
+            'start_rule': 'main',
+            'rules': {
+                'main': {
+                    'ast': {'tag': 'main'},
+                    'sequence': [
+                        # This is an inline definition with an AST block.
+                        # Koine should handle this by creating an anonymous rule.
+                        {'literal': 'a', 'ast': {'tag': 'item_a', 'leaf': True}}
+                    ]
+                }
+            }
+        }
+        
+        try:
+            parser = Parser(grammar)
+            result = parser.parse('a')
+            self.assertEqual(result['status'], 'success')
+            expected_ast = {
+                'tag': 'main',
+                'text': 'a',
+                'line': 1, 'col': 1,
+                'children': [
+                    {'tag': 'item_a', 'text': 'a', 'line': 1, 'col': 1}
+                ]
+            }
+            # The structure of the AST proves that the inline 'ast' block was respected.
+            self.assertEqual(result['ast'], expected_ast)
+        except Exception as e:
+            self.fail(f"Parser construction failed for grammar with inline ast block. Error: {e}")
+
+    def test_one_or_more_quantifier(self):
+        """
+        Tests that the `one_or_more` quantifier correctly parses one or more
+        items and fails on zero items.
+        """
+        grammar = {
+            'start_rule': 'main',
+            'rules': {
+                'main': {
+                    'ast': {'tag': 'main'},
+                    'one_or_more': {'rule': 'item_and_space'}
+                },
+                'item_and_space': {
+                    'ast': {'promote': True},
+                    'sequence': [
+                        {'literal': 'a', 'ast': {'tag': 'item', 'leaf': True}},
+                        {'regex': r'\s*', 'ast': {'discard': True}}
+                    ]
+                }
+            }
+        }
+        parser = Parser(grammar)
+        
+        # Should succeed on one and many items
+        result_one = parser.parse('a')
+        self.assertEqual(result_one['status'], 'success')
+        self.assertEqual(len(result_one['ast']['children']), 1)
+        
+        result_many = parser.parse('a a a ')
+        self.assertEqual(result_many['status'], 'success')
+        self.assertEqual(len(result_many['ast']['children']), 3)
+
+        # Should fail on zero items
+        result_zero = parser.parse('')
+        self.assertEqual(result_zero['status'], 'error')
+
+    def test_map_children_with_optional_rules(self):
+        """
+        Tests that `structure.map_children` correctly indexes children when
+        an optional rule is not present in the input.
+        """
+        grammar = {
+            'start_rule': 'main',
+            'rules': {
+                'main': {
+                    'ast': {
+                        'structure': {
+                            'tag': 'main_node',
+                            'map_children': {
+                                'child_a': {'from_child': 0},
+                                'child_c': {'from_child': 2}
+                            }
+                        }
+                    },
+                    'sequence': [
+                        {'rule': 'item_a'},
+                        {'optional': {'rule': 'item_b'}}, # Optional child at index 1
+                        {'rule': 'item_c'}
+                    ]
+                },
+                'item_a': {'ast': {'leaf': True, 'tag': 'A'}, 'literal': 'a'},
+                'item_b': {'ast': {'leaf': True, 'tag': 'B'}, 'literal': 'b'},
+                'item_c': {'ast': {'leaf': True, 'tag': 'C'}, 'literal': 'c'}
+            }
+        }
+        parser = Parser(grammar)
+
+        # Case 1: Optional rule is NOT present
+        result = parser.parse("ac")
+        self.assertEqual(result['status'], 'success')
+        ast = result['ast']
+        self.assertEqual(ast['tag'], 'main_node')
+        self.assertIn('child_a', ast['children'])
+        self.assertIn('child_c', ast['children'])
+        self.assertEqual(ast['children']['child_a']['tag'], 'A')
+        self.assertEqual(ast['children']['child_c']['tag'], 'C')
+        self.assertNotIn('child_b', ast['children'])
+
+        # Case 2: Optional rule IS present
+        result_with_b = parser.parse("abc")
+        self.assertEqual(result_with_b['status'], 'success')
+        ast_b = result_with_b['ast']
+        self.assertEqual(ast_b['children']['child_a']['tag'], 'A')
+        self.assertEqual(ast_b['children']['child_c']['tag'], 'C')
+        # We didn't map 'b', so it shouldn't be in the final children map
+        self.assertNotIn('child_b', ast_b['children'])
+
+    def test_grammar_with_includes(self):
+        """Tests that a grammar can include rules from another file."""
+        # Create dummy grammar files for the test
+        common_rules_content = """
+        rules:
+          whitespace:
+            ast: { discard: true }
+            regex: "[ ]+"
+          identifier:
+            ast: { leaf: true }
+            regex: "[a-z]+"
+        """
+        main_grammar_content = """
+        includes:
+          - "common.yaml"
+        start_rule: 'main'
+        rules:
+          main:
+            sequence:
+              - { rule: identifier }
+              - { rule: whitespace }
+              - { literal: '=' }
+        """
+        
+        common_path = TESTS_DIR / "common.yaml"
+        main_path = TESTS_DIR / "main.yaml"
+        
+        common_path.write_text(common_rules_content)
+        main_path.write_text(main_grammar_content)
+
+        try:
+            parser = Parser.from_file(str(main_path))
+            result = parser.parse("abc =")
+            self.assertEqual(result['status'], 'success')
+
+            # Test that a rule in the main file overrides the included one
+            # Test that a rule in the main file overrides the included one
+            main_grammar_override = """
+            includes:
+              - "common.yaml"
+            start_rule: 'main'
+            rules:
+              main:
+                sequence:
+                  - { rule: identifier }
+                  - { optional: { rule: whitespace } }
+              identifier: # Override
+                ast: { leaf: true }
+                regex: "[0-9]+"
+            """
+            main_path.write_text(main_grammar_override)
+            parser_override = Parser.from_file(str(main_path))
+            result_override = parser_override.parse("123")
+            self.assertEqual(result_override['status'], 'success')
+            result_fail = parser_override.parse("abc")
+            self.assertEqual(result_fail['status'], 'error')
+
+        finally:
+            # Clean up the dummy files
+            if common_path.exists():
+                common_path.unlink()
+            if main_path.exists():
+                main_path.unlink()
+
+    def test_transpiler_fallback_behavior(self):
+        """
+        Tests that the transpiler falls back to using 'value' or 'text'
+        when no specific rule is found for a node's tag.
+        """
+        transpiler_grammar = {
+            "rules": {
+                "container": {
+                    "join_children_with": " ",
+                    "template": "{children}"
+                }
+                # No rules for 'node_with_value' or 'node_with_text'
+            }
+        }
+
+        ast = {
+            "tag": "container",
+            "children": [
+                {"tag": "node_with_value", "value": 123, "text": "value_should_be_ignored"},
+                {"tag": "node_with_text", "text": "abc"},
+            ]
+        }
+
+        transpiler = Transpiler(transpiler_grammar)
+        translation = transpiler.transpile(ast)
+
+        # Expects value to be preferred over text
+        self.assertEqual(translation, "123 abc")
 
 
 if __name__ == '__main__':
