@@ -234,7 +234,6 @@ class TestKoineGrammarGeneration(unittest.TestCase):
             }
         }
 
-        # This test will FAIL if the bug is present.
         try:
             parser = Parser(grammar)
             # To be thorough, check that it can parse something.
@@ -396,10 +395,6 @@ class TestKoineGrammarGeneration(unittest.TestCase):
         result = parser.parse('ac')
         self.assertEqual(result['status'], 'success')
 
-        # Current (undesired) behavior would produce children like:
-        # [ {'tag': 'a', ...}, [], {'tag': 'c', ...} ]
-
-        # Desired behavior:
         expected_ast = {
             'tag': 'main',
             'text': 'ac',
@@ -442,7 +437,6 @@ class TestKoineGrammarGeneration(unittest.TestCase):
         result = parser.parse('ac')
         self.assertEqual(result['status'], 'success')
         # The AST should be the result of the second choice, `ac`.
-        # The bug would result in a parse failure or an incorrect AST.
         expected_ast = [
             {'tag': 'a', 'text': 'a', 'line': 1, 'col': 1},
             {'tag': 'c', 'text': 'c', 'line': 1, 'col': 2}
@@ -905,6 +899,48 @@ class TestKoineGrammarGeneration(unittest.TestCase):
 
         # Expects value to be preferred over text
         self.assertEqual(translation, "123 abc")
+
+    def test_parent_tag_wraps_promoted_child_list(self):
+        """
+        Tests that a parent rule with a 'tag' correctly wraps the result of
+        a child rule that uses 'promote' and returns a list.
+        """
+        grammar = {
+            'start_rule': 'wrapper',
+            'rules': {
+                'wrapper': {
+                    'ast': {'tag': 'wrapper'},
+                    'rule': 'content'
+                },
+                'content': {
+                    'ast': {'promote': True},
+                    'sequence': [
+                        {'rule': 'item'},
+                        {'regex': r'\s+', 'ast': {'discard': True}},
+                        {'rule': 'item'}
+                    ]
+                },
+                'item': {
+                    'ast': {'tag': 'item', 'leaf': True},
+                    'regex': r'\w+'
+                }
+            }
+        }
+        parser = Parser(grammar)
+        result = parser.parse("word1 word2")
+        self.assertEqual(result['status'], 'success')
+        
+        expected_ast = {
+            'tag': 'wrapper',
+            'text': 'word1 word2',
+            'line': 1,
+            'col': 1,
+            'children': [
+                {'tag': 'item', 'text': 'word1', 'line': 1, 'col': 1},
+                {'tag': 'item', 'text': 'word2', 'line': 1, 'col': 7}
+            ]
+        }
+        self.assertEqual(result['ast'], expected_ast)
 
 
 if __name__ == '__main__':

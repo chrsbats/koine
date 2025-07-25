@@ -134,6 +134,17 @@ def transpile_rule(rule_definition, is_token_grammar=False):
         escaped_value = value.replace('"', '\\"')
         return f'~r"{escaped_value}"'
     elif rule_type == 'rule':
+        # If a rule reference has its own AST config, it's not a simple alias.
+        # We must prevent Parsimonious from optimizing it away, which would
+        # cause the AST config to be ignored. We force it to be a sequence
+        # of one, which is not optimized. An 'ast' block that ONLY contains
+        # 'name' is for structuring the parent and does not count.
+        ast_config = rule_definition.get('ast', {})
+        ast_keys = list(ast_config.keys())
+        is_just_a_name = len(ast_keys) == 1 and 'name' in ast_keys
+
+        if 'ast' in rule_definition and not is_just_a_name:
+            return f'({value} ("")?)'
         return value
     elif rule_type in ['choice', 'sequence']:
         if not value:
@@ -294,12 +305,17 @@ class AstBuilderVisitor(NodeVisitor):
             # of children from a sequence that contains a mix of single nodes and
             # sub-lists (from quantifiers). We need to flatten this list.
             if isinstance(children, list):
+                # Iteratively and deeply flatten the list. This handles cases
+                # like a promoted quantifier over a promoted rule, which can
+                # create nested lists of children.
                 flat_list = []
-                for child in children:
-                    if isinstance(child, list):
-                        flat_list.extend(child)
-                    else:
-                        flat_list.append(child)
+                stack = list(reversed(children))
+                while stack:
+                    item = stack.pop()
+                    if isinstance(item, list):
+                        stack.extend(reversed(item))
+                    elif item is not None:
+                        flat_list.append(item)
                 children = flat_list
 
             # Special case for `( expression )` style rules.
@@ -401,30 +417,30 @@ class AstBuilderVisitor(NodeVisitor):
         for i, part in enumerate(child_producing_parts):
             if 'ast' in part and 'name' in part['ast']:
                 child_name = part['ast']['name']
-                if i < len(children):
-                    named_children[child_name] = children[i]
+                # Must check against unwrapped_children, which may not be a list
+                safe_children = unwrapped_children if isinstance(unwrapped_children, list) else [unwrapped_children]
+                if i < len(safe_children):
+                    named_children[child_name] = safe_children[i]
                 else: # Handle optional named children that didn't match
                     named_children[child_name] = []
         
         if named_children:
              base_node['children'] = named_children
-        elif children is None or not children:
+        elif unwrapped_children is None or not unwrapped_children:
              base_node['children'] = []
         else:
-            # If we have a list of children, flatten any sub-lists. This is to
-            # correctly handle promoted quantifiers (e.g. `zero_or_more`) which
-            # return a list of nodes that should be spliced into the parent's
-            # list of children, not appended as a nested list.
             if isinstance(unwrapped_children, list):
+                # Deeply flatten the list to handle nested promotions from children.
                 flat_list = []
-                for child in unwrapped_children:
-                    if isinstance(child, list):
-                        flat_list.extend(child)
-                    else:
-                        flat_list.append(child)
+                stack = list(reversed(unwrapped_children))
+                while stack:
+                    item = stack.pop()
+                    if isinstance(item, list):
+                        stack.extend(reversed(item))
+                    elif item is not None:
+                        flat_list.append(item)
                 base_node['children'] = flat_list
             else:
-                # This is likely a single node.
                 base_node['children'] = unwrapped_children
 
         return base_node

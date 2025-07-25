@@ -38,7 +38,7 @@ def clean_ast(node):
 # with `promote: true` contains a rule that also has `promote: true`.
 # The desired behavior is for the collected children to be flattened into the
 # parent's list, not wrapped in nested lists.
-BUG_TEST_GRAMMAR = """
+TEST_GRAMMAR = """
 start_rule: list
 rules:
   list:
@@ -65,7 +65,7 @@ def test_nested_promote_in_quantifier_flattens_children():
     Tests that a `promote` on a rule inside a `zero_or_more` quantifier
     correctly flattens into the parent's child list.
     """
-    grammar_def = yaml.safe_load(BUG_TEST_GRAMMAR)
+    grammar_def = yaml.safe_load(TEST_GRAMMAR)
     parser = Parser(grammar_def)
 
     source_code = "a b c"
@@ -81,23 +81,10 @@ def test_nested_promote_in_quantifier_flattens_children():
     try:
         result_ast = parser.parse(source_code)
     except Exception as e:
-        pytest.fail(f"Parsing failed unexpectedly for koine bug test:\n{e}", pytrace=False)
+        pytest.fail(f"Parsing failed unexpectedly:\n{e}", pytrace=False)
 
     cleaned_result_ast = clean_ast(result_ast)
 
-    # Based on the failure in `test_parser.py`, we expect this assertion to fail.
-    # The actual result will likely be a nested structure like:
-    # { 'tag': 'list', 'children': [
-    #     {'tag': 'item', 'text': 'a'},
-    #     [{'tag': 'item', 'text': 'b'}], # Incorrectly nested
-    #     [{'tag': 'item', 'text': 'c'}]  # Incorrectly nested
-    # ]}
-    # Or, if the bug is slightly different, it might be:
-    # { 'tag': 'list', 'children': [
-    #     {'tag': 'item', 'text': 'a'},
-    #     {'tag': 'item', 'text': 'b'},
-    #     [{'tag': 'item', 'text': 'c'}]
-    # ]}
     assert cleaned_result_ast == expected_ast
 
 
@@ -136,10 +123,8 @@ def test_promoted_rule_with_quantifier_flattens_children():
     try:
         result_ast = parser.parse(source_code)
     except Exception as e:
-        pytest.fail(f"Parsing failed unexpectedly for koine bug test:\n{e}", pytrace=False)
+        pytest.fail(f"Parsing failed unexpectedly:\n{e}", pytrace=False)
 
     cleaned_result_ast = clean_ast(result_ast)
 
-    # The bug would produce a nested list like:
-    # [{'tag': 'item', 'text': 'a'}, [{'tag': 'item', 'text': 'b'}, {'tag': 'item', 'text': 'c'}]]
     assert cleaned_result_ast == expected_ast
