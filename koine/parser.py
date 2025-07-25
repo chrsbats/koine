@@ -131,7 +131,8 @@ def transpile_rule(rule_definition, is_token_grammar=False):
         escaped_value = value.replace("\"", "\\\"")
         return f'"{escaped_value}"'
     elif rule_type == 'regex':
-        return f'~r"{value}"'
+        escaped_value = value.replace('"', '\\"')
+        return f'~r"{escaped_value}"'
     elif rule_type == 'rule':
         return value
     elif rule_type in ['choice', 'sequence']:

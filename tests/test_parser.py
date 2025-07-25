@@ -589,6 +589,68 @@ class TestKoineGrammarGeneration(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Unreachable rules detected: b, c"):
             Parser(grammar)
 
+    def test_regex_with_double_quotes_works(self):
+        """
+        Tests that a regex with a double quote works correctly, regardless
+        of the YAML quoting style used for the grammar definition.
+        """
+        # In YAML, both of these string styles produce the same Python string.
+        # This test ensures Koine handles it correctly.
+        # 1. Using single quotes in YAML
+        yaml_with_single_quotes = """
+        start_rule: non_quote_char
+        rules:
+          non_quote_char:
+            ast: {leaf: true}
+            regex: '[^"]'
+        """
+        # 2. Using double quotes in YAML
+        yaml_with_double_quotes = """
+        start_rule: non_quote_char
+        rules:
+          non_quote_char:
+            ast: {leaf: true}
+            regex: "[^\\"]"
+        """
+
+        for i, yaml_string in enumerate([yaml_with_single_quotes, yaml_with_double_quotes]):
+            with self.subTest(yaml_style="single_quotes" if i == 0 else "double_quotes"):
+                grammar = yaml.safe_load(yaml_string)
+                try:
+                    parser = Parser(grammar)
+                    # Check it parses a valid character
+                    result = parser.parse('a')
+                    self.assertEqual(result['status'], 'success')
+                    # Check it fails to parse the double quote
+                    result_fail = parser.parse('"')
+                    self.assertEqual(result_fail['status'], 'error')
+                except ValueError as e:
+                    self.fail(f"Parser construction failed for a regex with quotes, indicating an escaping issue. Error: {e}")
+
+    def test_regex_with_single_quotes_works(self):
+        """
+        Tests that a regex with a single quote works correctly. This is
+        a complement to the double-quote test.
+        """
+        grammar = {
+            'start_rule': 'non_single_quote_char',
+            'rules': {
+                'non_single_quote_char': {
+                    'ast': {'leaf': True},
+                    'regex': "[^']"
+                }
+            }
+        }
+        try:
+            parser = Parser(grammar)
+            result = parser.parse('a')
+            self.assertEqual(result['status'], 'success')
+            # Also test that it fails on a single quote
+            result_fail = parser.parse("'")
+            self.assertEqual(result_fail['status'], 'error')
+        except ValueError as e:
+            self.fail(f"Parser construction failed for a regex with quotes, indicating an escaping issue. Error: {e}")
+
     def test_unreachable_rule_linter_handles_missing_start(self):
         """
         Tests that the unreachable rule linter doesn't crash if the start
