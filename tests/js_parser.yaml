@@ -1,0 +1,129 @@
+# Grammar to parse a subset of JavaScript
+lexer:
+  tokens:
+    - { regex: "[ \\t\\n]+", action: "skip" }
+    - { regex: "function", token: "FUNCTION" }
+    - { regex: "let", token: "LET" }
+    - { regex: "var", token: "VAR" }
+    - { regex: "for", token: "FOR" }
+    - { regex: "return", token: "RETURN" }
+    - { regex: "\\(", token: "LPAREN", ast: { discard: true } }
+    - { regex: "\\)", token: "RPAREN", ast: { discard: true } }
+    - { regex: "\\{", token: "LBRACE", ast: { discard: true } }
+    - { regex: "\\}", token: "RBRACE", ast: { discard: true } }
+    - { regex: ",", token: "COMMA", ast: { discard: true } }
+    - { regex: ";", token: "SEMI" }
+    - { regex: "=", token: "EQUALS" }
+    - { regex: "\\+", token: "PLUS" }
+    - { regex: "<", token: "LT" }
+    - { regex: "\\+\\+", token: "INC" }
+    - { regex: "[a-zA-Z_][a-zA-Z0-9_]*", token: "NAME" }
+    - { regex: "[0-9]+", token: "NUMBER", ast: { type: "number" } }
+
+start_rule: function_definition
+
+rules:
+  function_definition:
+    ast:
+      structure: { tag: "function_definition", map_children: { name: {from_child: 1}, params: {from_child: 3}, body: {from_child: 6} } }
+    sequence:
+      - { token: "FUNCTION", ast: { discard: true } }
+      - { rule: identifier }
+      - { token: "LPAREN" }
+      - { rule: parameters }
+      - { token: "RPAREN" }
+      - { token: "LBRACE" }
+      - { rule: statements }
+      - { token: "RBRACE" }
+
+  identifier:
+    ast: { promote: true }
+    sequence: [ { token: "NAME" } ]
+
+  number:
+    ast: { promote: true }
+    sequence: [ { token: "NUMBER" } ]
+
+  parameters:
+    ast: { tag: "parameters" }
+    optional:
+      sequence:
+        - { rule: identifier }
+        - zero_or_more:
+            sequence:
+              - { token: "COMMA", ast: { discard: true } }
+              - { rule: identifier }
+  
+  statements:
+    ast: { tag: "statements" }
+    zero_or_more: { rule: statement }
+
+  statement:
+    ast: { promote: true }
+    choice:
+      - { rule: assignment_statement }
+      - { rule: for_loop }
+      - { rule: return_statement }
+
+  assignment_statement:
+    ast:
+      structure: { tag: "assignment", map_children: { target: { from_child: 1 }, value: { from_child: 3 } } }
+    sequence:
+      - optional:
+          choice:
+            - { token: "LET", ast: { discard: true } }
+            - { token: "VAR", ast: { discard: true } }
+      - { rule: identifier }
+      - { token: "EQUALS", ast: { discard: true } }
+      - { rule: expression }
+      - { token: "SEMI", ast: { discard: true } }
+
+  for_loop:
+    ast:
+      structure: { tag: "for_loop", map_children: { limit: { from_child: 9 }, body: { from_child: 15 } } }
+    sequence:
+      - { token: "FOR", ast: { discard: true } }
+      - { token: "LPAREN" }
+      - { token: "LET", ast: { discard: true } }
+      - { token: "NAME" } # iterator 'i'
+      - { token: "EQUALS", ast: { discard: true } }
+      - { token: "NUMBER" } # '0'
+      - { token: "SEMI", ast: { discard: true } }
+      - { token: "NAME" } # iterator 'i'
+      - { token: "LT", ast: { discard: true } }
+      - { rule: identifier } # limit 'y'
+      - { token: "SEMI", ast: { discard: true } }
+      - { token: "NAME" } # iterator 'i'
+      - { token: "INC", ast: { discard: true } }
+      - { token: "RPAREN" }
+      - { token: "LBRACE" }
+      - { rule: statements }
+      - { token: "RBRACE" }
+
+  return_statement:
+    ast:
+      structure: { tag: "return", map_children: { value: {from_child: 1} } }
+    sequence:
+      - { token: "RETURN", ast: { discard: true } }
+      - { rule: expression }
+      - { token: "SEMI", ast: { discard: true } }
+
+  expression:
+    ast: { promote: true }
+    choice:
+      - { rule: addition }
+      - { rule: term }
+  
+  addition:
+    ast:
+      structure: { tag: "binary_op", map_children: { left: { from_child: 0 }, right: { from_child: 2 } } }
+    sequence:
+      - { rule: term }
+      - { token: "PLUS", ast: { discard: true } }
+      - { rule: term }
+
+  term:
+    ast: { promote: true }
+    choice:
+      - { rule: identifier }
+      - { rule: number }

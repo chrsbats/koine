@@ -1,0 +1,22 @@
+rules:
+  function_definition:
+    template: "def {name}({params}):\n{body}"
+  NAME:
+    use: "text"
+  NUMBER:
+    use: "value"
+  parameters:
+    join_children_with: ", "
+    template: "{children}"
+  statements:
+    indent: true
+    join_children_with: "\n"
+    template: "{children}"
+  assignment:
+    template: "{target} = {value}"
+  for_loop:
+    template: "for i in range({limit}):\n{body}"
+  return:
+    template: "return {value}"
+  binary_op:
+    template: "{left} + {right}"

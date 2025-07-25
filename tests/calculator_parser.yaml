@@ -10,41 +10,33 @@ rules:
             - { rule: expression }
       - { rule: trailing_whitespace }
 
-  # Lowest precedence: Addition/Subtraction (Left-Associative)
   expression:
     ast: { structure: "left_associative_op" }
-    transpile: { template: "({op} {left} {right})" }
     sequence:
       - { rule: term }
       - zero_or_more:
           sequence: [{rule: _}, {rule: add_op}, {rule: _}, {rule: term}]
 
-  # Next precedence: Multiplication/Division (Left-Associative)
   term:
     ast: { structure: "left_associative_op" }
-    transpile: { template: "({op} {left} {right})" }
     sequence:
-      - { rule: power } # <-- Calls 'power' instead of 'factor'
+      - { rule: power }
       - zero_or_more:
           sequence: [{rule: _}, {rule: mul_op}, {rule: _}, {rule: power}]
 
-  # New Rule: Highest precedence operator (Right-Associative)
   power:
     ast: { structure: "right_associative_op" }
-    transpile: { template: "({op} {left} {right})" }
     sequence:
-      - { rule: factor } # The left-hand side
-      - optional: # The (op expr)? part
+      - { rule: factor }
+      - optional:
           sequence:
             - { rule: _ }
             - { rule: power_op }
             - { rule: _ }
-            - { rule: power } # <-- The right-recursive call
+            - { rule: power }
 
-  # Base of the expression tree
   factor:
     ast: { promote: true }
-    transpile: { promote: true }
     choice:
       - { rule: number }
       - sequence:
@@ -52,29 +44,31 @@ rules:
           - { rule: _ }
           - { rule: expression }
           - { rule: _ }
-          - { literal: ")" }
+          - { rule: rparen }
 
   add_op:
-    ast: { leaf: true }
+    ast: { promote: true }
     choice:
-      - { literal: "+", transpile: { value: "add" } }
-      - { literal: "-", transpile: { value: "sub" } }
+      - { literal: "+", ast: { tag: "add_op" } }
+      - { literal: "-", ast: { tag: "add_op" } }
 
   mul_op:
-    ast: { leaf: true }
+    ast: { promote: true }
     choice:
-      - { literal: "*", transpile: { value: "mul" } }
-      - { literal: "/", transpile: { value: "div" } }
+      - { literal: "*", ast: { tag: "mul_op" } }
+      - { literal: "/", ast: { tag: "mul_op" } }
 
-  # New operator definition
   power_op:
-    ast: { leaf: true }
+    ast: { leaf: true, tag: "power_op" }
     literal: "^"
-    transpile: { value: "pow" }
+
+  rparen:
+    ast: { discard: true }
+    choice:
+      - { literal: ")" }
 
   number:
     ast: { leaf: true, type: "number" }
-    transpile: { use: "value" }
     regex: "-?\\d+"
 
   separator:

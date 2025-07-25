@@ -77,10 +77,13 @@ TESTS_DIR = Path(__file__).parent
     ),
 ])
 def test_calc(code, expected_ast, expected_translation):
-    with open(TESTS_DIR / "calculator_grammar.yaml", "r") as f:
-        my_grammar = yaml.safe_load(f)
+    with open(TESTS_DIR / "calculator_parser.yaml", "r") as f:
+        parser_grammar = yaml.safe_load(f)
+    with open(TESTS_DIR / "calculator_to_lisp_transpiler.yaml", "r") as f:
+        transpiler_grammar = yaml.safe_load(f)
 
-    my_parser = Parser(my_grammar)
+    my_parser = Parser(parser_grammar)
+    my_transpiler = Transpiler(transpiler_grammar)
     
     # Test validation
     valid, msg = my_parser.validate(code)
@@ -92,39 +95,61 @@ def test_calc(code, expected_ast, expected_translation):
     assert parse_result['ast'] == expected_ast
     
     # Test transpilation
-    transpiled_result = my_parser.transpile(code, rule="expression")
-    assert transpiled_result['status'] == 'success'
-    assert transpiled_result['translation'] == expected_translation
+    translation = my_transpiler.transpile(parse_result['ast'])
+    assert translation == expected_translation
 
 def test_calc_errors():
-    with open(TESTS_DIR / "calculator_grammar.yaml", "r") as f:
+    with open(TESTS_DIR / "calculator_parser.yaml", "r") as f:
         my_grammar = yaml.safe_load(f)
 
     my_parser = Parser(my_grammar)
 
-    test_cases = [
-        ("2 + + 3", (1, 3), "+ + 3"),
-        ("2 +", (1, 3), "+"),
-        ("2 $ 3", (1, 3), "$ 3"),
-        ("1 + 2\n3 * 4\n5 $ 6", (3, 3), "$ 6"),
+    # Test cases that should result in a ParseError when parsed as 'expression'
+    expression_error_cases = [
+        ("2 + + 3", (1, 2), " + + 3", "Failed to consume entire input"),
+        ("2 +", (1, 2), " +", "Failed to consume entire input"),
+        ("((1)", (1, 5), "", "Unexpected end of input"),
     ]
 
-    for code, expected_pos, expected_snippet in test_cases:
-        result = my_parser.parse(code)
-        assert result['status'] == 'error'
+    for code, expected_pos, expected_snippet, expected_error_text in expression_error_cases:
+        result = my_parser.parse(code, rule="expression")
+        assert result['status'] == 'error', f"Code that should have failed with rule 'expression': '{code}'"
         message = result['message']
         expected_line, expected_col = expected_pos
-        # Check the line and column are in the message
-        assert f"L{expected_line}:C{expected_col}" in message
-        # Check the snippet is in the message
-        assert expected_snippet in message
+        assert f"L{expected_line}:C{expected_col}" in message, \
+            f"For '{code}', expected L:C '{expected_pos}' in message:\n{message}"
+        assert expected_snippet in message, \
+            f"For '{code}', expected snippet '{expected_snippet}' in message:\n{message}"
+        assert expected_error_text in message, \
+            f"For '{code}', expected text '{expected_error_text}' in message:\n{message}"
+
+    # Test cases that should result in IncompleteParseError with the default 'program' rule
+    program_error_cases = [
+        ("2 $ 3", (1, 3), "$ 3", "Failed to consume entire input"),
+        ("1 + 2\n3 * 4\n5 $ 6", (3, 3), "$ 6", "Failed to consume entire input"),
+    ]
+
+    for code, expected_pos, expected_snippet, expected_error_text in program_error_cases:
+        result = my_parser.parse(code)
+        assert result['status'] == 'error', f"Code that should have failed with rule 'program': '{code}'"
+        message = result['message']
+        expected_line, expected_col = expected_pos
+
+        assert f"L{expected_line}:C{expected_col}" in message, \
+            f"For '{code}', expected L:C '{expected_pos}' in message:\n{message}"
+        assert expected_snippet in message, \
+            f"For '{code}', expected snippet '{expected_snippet}' in message:\n{message}"
+        assert expected_error_text in message, \
+            f"For '{code}', expected text '{expected_error_text}' in message:\n{message}"
 
 def test_advanced():
-    with open(TESTS_DIR / "advanced_grammar.yaml", "r") as f:
-        my_grammar = yaml.safe_load(f)
+    with open(TESTS_DIR / "advanced_parser.yaml", "r") as f:
+        parser_grammar = yaml.safe_load(f)
+    with open(TESTS_DIR / "advanced_transpiler.yaml", "r") as f:
+        transpiler_grammar = yaml.safe_load(f)
 
-    my_parser = Parser(my_grammar)
-    my_transpiler = Transpiler(my_grammar)
+    my_parser = Parser(parser_grammar)
+    my_transpiler = Transpiler(transpiler_grammar)
 
     
     test_cases = [
@@ -141,16 +166,16 @@ def test_advanced():
             "col": 1,
             "children": {
                 "repo": {
-                "tag": "path",
-                "text": "/path/to/repo",
-                "line": 1,
-                "col": 7
+                    "tag": "path",
+                    "text": "/path/to/repo",
+                    "line": 1,
+                    "col": 7,
                 },
                 "dest": {
-                "tag": "path",
-                "text": "/new/path",
-                "line": 1,
-                "col": 24
+                    "tag": "path",
+                    "text": "/new/path",
+                    "line": 1,
+                    "col": 24,
                 }
             }
         },
@@ -161,10 +186,10 @@ def test_advanced():
             "col": 1,
             "children": {
                 "repo": {
-                "tag": "path",
-                "text": "/another/repo",
-                "line": 1,
-                "col": 7
+                    "tag": "path",
+                    "text": "/another/repo",
+                    "line": 1,
+                    "col": 7,
                 }
             }
         },
@@ -174,20 +199,16 @@ def test_advanced():
     expected_translations = ["(clone-to /path/to/repo /new/path)","(clone /another/repo)",""]
 
     for code,expected_ast,expected_translation in zip(test_cases,expected_asts,expected_translations):
-        print(f"--- Input: '{code}' ---")
         parse_result = my_parser.parse(code)
         
         if parse_result['status'] == 'success':
-            print("✅ AST:")
-            print(json.dumps(parse_result['ast'], indent=2))
             assert parse_result['ast'] == expected_ast
-            print("\n✅ Transpiled Output:")
             transpiled_code = my_transpiler.transpile(parse_result['ast'])
-            print(transpiled_code)
             assert transpiled_code == expected_translation
         else:
-            print(f"❌ Parse Error: {parse_result['message']}")
-        print("-" * 25)
+            # The test case for failure is an empty AST and empty translation
+            assert expected_ast == {}
+            assert expected_translation == ""
 
 import unittest
 from koine import Parser
@@ -458,6 +479,134 @@ class TestKoineGrammarGeneration(unittest.TestCase):
             }
         }
         self.assertEqual(result['ast'], expected_ast)
+
+    def test_declarative_ast_structure(self):
+        """Tests that a declarative `structure` block can build a custom AST node."""
+        grammar = {
+            'start_rule': 'destructuring_assignment',
+            'rules': {
+                'destructuring_assignment': {
+                    'ast': {
+                        'structure': {
+                            'tag': 'multi_set',
+                            'map_children': {
+                                'targets': {'from_child': 0},
+                                'value': {'from_child': 2}
+                            }
+                        }
+                    },
+                    'sequence': [
+                        {'rule': 'list_of_identifiers'},
+                        {'literal': ':', 'ast': {'discard': True}},
+                        {'rule': 'list_of_numbers'}
+                    ]
+                },
+                'list_of_identifiers': {
+                    'ast': {'tag': 'targets'},
+                    'sequence': [
+                        {'literal': '[', 'ast': {'discard': True}},
+                        {'rule': 'identifier'},
+                        {'literal': ']', 'ast': {'discard': True}},
+                    ]
+                },
+                'list_of_numbers': {
+                    'ast': {'tag': 'numbers'},
+                     'sequence': [
+                        {'literal': '#[', 'ast': {'discard': True}},
+                        {'rule': 'number'},
+                        {'literal': ']', 'ast': {'discard': True}},
+                    ]
+                },
+                'identifier': {'ast': {'leaf': True}, 'regex': '[a-z]+'},
+                'number': {'ast': {'leaf': True, 'type': 'number'}, 'regex': r'\d+'},
+            }
+        }
+        parser = Parser(grammar)
+        result = parser.parse('[a]:#[1]')
+        self.assertEqual(result['status'], 'success')
+
+        expected_ast = {
+            'tag': 'multi_set',
+            'text': '[a]:#[1]',
+            'line': 1,
+            'col': 1,
+            'children': {
+                'targets': {
+                    'tag': 'targets',
+                    'text': '[a]',
+                    'line': 1,
+                    'col': 1,
+                    'children': [
+                        {'tag': 'identifier', 'text': 'a', 'line': 1, 'col': 2}
+                    ]
+                },
+                'value': {
+                    'tag': 'numbers',
+                    'text': '#[1]',
+                    'line': 1,
+                    'col': 5,
+                    'children': [
+                        {'tag': 'number', 'text': '1', 'line': 1, 'col': 7, 'value': 1}
+                    ]
+                }
+            }
+        }
+        self.assertEqual(result['ast'], expected_ast)
+
+    def test_left_recursion_raises_error(self):
+        """
+        Tests that initializing a Parser with a left-recursive grammar
+        raises a ValueError.
+        """
+        # This is a best-effort check. `parsimonious` detects indirect
+        # recursion, but not all forms of direct recursion (e.g., when the
+        # recursive rule is inside a group `()`), so we only test for the
+        # cases it is known to catch.
+        # Indirect left-recursion
+        grammar_indirect = {
+            'start_rule': 'a',
+            'rules': {
+                'a': {'rule': 'b'},
+                'b': {'rule': 'a'}
+            }
+        }
+        with self.assertRaisesRegex(ValueError, "Left-recursion detected"):
+            Parser(grammar_indirect)
+
+    def test_unreachable_rule_raises_error(self):
+        """
+        Tests that initializing a Parser with unreachable rules raises a
+        ValueError.
+        """
+        grammar = {
+            'start_rule': 'a',
+            'rules': {
+                'a': {'literal': 'foo'},
+                'b': {'literal': 'bar'}, # unreachable
+                'c': {'literal': 'baz'}  # unreachable
+            }
+        }
+        with self.assertRaisesRegex(ValueError, "Unreachable rules detected: b, c"):
+            Parser(grammar)
+
+    def test_unreachable_rule_linter_handles_missing_start(self):
+        """
+        Tests that the unreachable rule linter doesn't crash if the start
+        rule is missing from the ruleset. Parsimonious will catch this
+        later during parsing.
+        """
+        grammar = {
+            'start_rule': 'nonexistent',
+            'rules': {
+                'a': {'literal': 'foo'}
+            }
+        }
+        try:
+            # The linter should not raise an exception, so construction succeeds.
+            # The failure would happen later during parsing.
+            Parser(grammar)
+        except ValueError as e:
+            self.fail(f"Parser initialization failed unexpectedly. The linter should not have run or failed, but got: {e}")
 
 
 if __name__ == '__main__':

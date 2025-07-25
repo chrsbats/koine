@@ -1,0 +1,26 @@
+rules:
+  function_definition:
+    template: "function {name}({params}) {{\n{body}\n}}"
+  NAME:
+    use: "text"
+  NUMBER:
+    use: "value"
+  parameters:
+    join_children_with: ", "
+    template: "{children}"
+  suite:
+    indent: true
+    join_children_with: "\n"
+    template: "{children}"
+  assignment:
+    cases:
+      - if: { path: 'state.vars.{target}', negate: true }
+        then: "let {target} = {value};"
+      - default: "{target} = {value};"
+    state_set: { "vars.{target}": True }
+  for_loop:
+    template: "for (let {iterator} = 0; {iterator} < {limit}; {iterator}++) {{\n{body}\n}}"
+  return:
+    template: "return {value};"
+  binary_op:
+    template: "{left} + {right}"

@@ -1,0 +1,120 @@
+# Grammar to parse a subset of Python
+lexer:
+  tokens:
+    # Order matters: more specific regexes should come first.
+    - { regex: "[ \\t]+", action: "skip" }
+    - { regex: "#.*", action: "skip" }
+    - { regex: "\\n[\\t ]*", action: "handle_indent" }
+    - { regex: "def", token: "DEF" }
+    - { regex: "for", token: "FOR" }
+    - { regex: "in", token: "IN" }
+    - { regex: "range", token: "RANGE" }
+    - { regex: "return", token: "RETURN" }
+    - { regex: "\\(", token: "LPAREN" }
+    - { regex: "\\)", token: "RPAREN" }
+    - { regex: ":", token: "COLON" }
+    - { regex: ",", token: "COMMA", ast: { discard: true } }
+    - { regex: "=", token: "EQUALS" }
+    - { regex: "\\+", token: "PLUS" }
+    - { regex: "[a-zA-Z_][a-zA-Z0-9_]*", token: "NAME" }
+    - { regex: "[0-9]+", token: "NUMBER", ast: { type: "number" } }
+
+start_rule: function_definition
+
+rules:
+  function_definition:
+    ast:
+      structure: { tag: "function_definition", map_children: { name: {from_child: 1}, params: {from_child: 3}, body: {from_child: 6} } }
+    sequence:
+      - { token: "DEF", ast: { discard: true } }
+      - { rule: identifier }
+      - { token: "LPAREN", ast: { discard: true } }
+      - { rule: parameters }
+      - { token: "RPAREN", ast: { discard: true } }
+      - { token: "COLON", ast: { discard: true } }
+      - { rule: suite }
+
+  identifier:
+    ast: { promote: true }
+    sequence: [ { token: "NAME" } ]
+
+  number:
+    ast: { promote: true }
+    sequence: [ { token: "NUMBER" } ]
+
+  parameters:
+    ast: { tag: "parameters" }
+    optional:
+      sequence:
+        - { rule: identifier }
+        - zero_or_more:
+            sequence:
+              - { token: "COMMA", ast: { discard: true } }
+              - { rule: identifier }
+
+  suite:
+    ast: { promote: true }
+    sequence:
+      - { token: "INDENT", ast: { discard: true } }
+      - { rule: statements }
+      - { token: "DEDENT", ast: { discard: true } }
+  
+  statements:
+    ast: { tag: "statements", promote: true }
+    one_or_more: { rule: statement }
+
+  statement:
+    ast: { promote: true }
+    choice:
+      - { rule: assignment_statement }
+      - { rule: for_range_loop }
+      - { rule: return_statement }
+
+  assignment_statement:
+    ast:
+      structure: { tag: "assignment", map_children: { target: { from_child: 0 }, value: { from_child: 2 } } }
+    sequence:
+      - { rule: identifier }
+      - { token: "EQUALS", ast: { discard: true } }
+      - { rule: expression }
+
+  for_range_loop:
+    ast:
+      structure: { tag: "for_loop", map_children: { iterator: {from_child: 1}, limit: {from_child: 5}, body: {from_child: 8} } }
+    sequence:
+      - { token: "FOR", ast: { discard: true } }
+      - { rule: identifier }
+      - { token: "IN", ast: { discard: true } }
+      - { token: "RANGE", ast: { discard: true } }
+      - { token: "LPAREN", ast: { discard: true } }
+      - { rule: identifier } # The limit
+      - { token: "RPAREN", ast: { discard: true } }
+      - { token: "COLON", ast: { discard: true } }
+      - { rule: suite }
+
+  return_statement:
+    ast:
+      structure: { tag: "return", map_children: { value: {from_child: 1} } }
+    sequence:
+      - { token: "RETURN", ast: { discard: true } }
+      - { rule: expression }
+
+  expression:
+    ast: { promote: true }
+    choice:
+      - { rule: addition }
+      - { rule: term }
+  
+  addition:
+    ast:
+      structure: { tag: "binary_op", map_children: { left: { from_child: 0 }, right: { from_child: 2 } } }
+    sequence:
+      - { rule: term }
+      - { token: "PLUS", ast: { discard: true } }
+      - { rule: term }
+
+  term:
+    ast: { promote: true }
+    choice:
+      - { rule: identifier }
+      - { rule: number }

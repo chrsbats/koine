@@ -1,0 +1,7 @@
+rules:
+  clone_to:
+    template: "(clone-to {repo} {dest})"
+  clone:
+    template: "(clone {repo})"
+  path:
+    use: "text"

@@ -1,0 +1,17 @@
+rules:
+  binary_op:
+    template: "({op} {left} {right})"
+  add_op:
+    cases:
+      - if: { path: 'node.text', equals: '+' }
+        then: "add"
+      - default: "sub"
+  mul_op:
+    cases:
+      - if: { path: 'node.text', equals: '*' }
+        then: "mul"
+      - default: "div"
+  power_op:
+    value: "pow"
+  number:
+    use: "value"

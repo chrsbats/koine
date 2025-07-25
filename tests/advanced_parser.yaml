@@ -9,7 +9,6 @@ rules:
 
   clone_to_statement:
     ast: { tag: "clone_to" }
-    transpile: { template: "(clone-to {repo} {dest})" }
     sequence:
       - positive_lookahead:
           sequence:
@@ -28,7 +27,6 @@ rules:
 
   clone_statement:
     ast: { tag: "clone" }
-    transpile: { template: "(clone {repo})" }
     sequence:
       - { rule: clone_keyword }
       - { rule: _ }
@@ -38,7 +36,6 @@ rules:
 
   path:
     ast: { leaf: true }
-    transpile: { use: "text" }
     regex: "[^\\s]+"
 
   clone_keyword:
