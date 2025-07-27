@@ -15,22 +15,30 @@ This approach separates the _what_ (your language definition) from the _how_ (th
 - **Powerful:** Handles operator precedence, left/right associativity, lookaheads, and features an integrated stateful lexer for indentation-based syntax.
 - **Language Agnostic:** The Koine format is a specification. The engine can be implemented in any language (current implementation is Python).
 
+## Why Koine?
+
+Koine is designed for people building DSLs, not compilers. If you've struggled with Lark's lookahead limitations or ANTLR's codegen overhead, Koine offers a different model: fully declarative grammar, AST, and transpilation—defined entirely as JSON/YAML.
+
+It was built for environments where you want to **write, modify, or interpret grammars at runtime**—such as agent scripting, game modding, or interactive systems that evolve on the fly.
+
+➡️ [Read the full rationale](RATIONALE.md)
+
 ### Philosophy and When to Use Koine
 
 Koine is designed to be an exceptionally fast tool for **prototyping Domain-Specific Languages (DSLs)** and other custom parsers. Its "configuration-over-code" approach makes it ideal for tasks where clarity, portability of the grammar, and development speed are more important than raw parsing performance.
 
 **Use Koine When:**
 
-*   **You are building a DSL:** For query languages, configuration formats, or command languages.
-*   **You need to parse complex but small-to-medium sized data:** Where the cost of building a traditional parser is too high.
-*   **You value a declarative, data-driven grammar:** The grammar can be stored as simple data (JSON/YAML) and is portable to other potential Koine engine implementations.
-*   **You are prototyping language ideas:** The entire lex->parse->transpile pipeline can be defined and modified quickly.
+- **You are building a DSL:** For query languages, configuration formats, or command languages.
+- **You need to parse complex but small-to-medium sized data:** Where the cost of building a traditional parser is too high.
+- **You value a declarative, data-driven grammar:** The grammar can be stored as simple data (JSON/YAML) and is portable to other potential Koine engine implementations.
+- **You are prototyping language ideas:** The entire lex->parse->transpile pipeline can be defined and modified quickly.
 
 **Consider Other Tools When:**
 
-*   **You need extreme performance:** Koine is not designed to compete with high-performance compilers like `gcc` or `ANTLR` for parsing millions of lines of code.
-*   **You require complex semantic analysis:** If your transpilation logic requires deep, stateful analysis (e.g., advanced type inference, complex symbol tables), a traditional visitor pattern in a general-purpose language may be more suitable.
-*   **You need sophisticated error recovery:** Koine reports the first syntax error it finds and stops.
+- **You need extreme performance:** Koine is not designed to compete with high-performance compilers like `gcc` or `ANTLR` for parsing millions of lines of code.
+- **You require complex semantic analysis:** If your transpilation logic requires deep, stateful analysis (e.g., advanced type inference, complex symbol tables), a traditional visitor pattern in a general-purpose language may be more suitable.
+- **You need sophisticated error recovery:** Koine reports the first syntax error it finds and stops.
 
 ---
 
@@ -47,6 +55,7 @@ pip install koine
 Let's build a simple calculator that can parse `2 + 3` and transpile it to `(add 2 3)`.
 
 1.  **Create your parser grammar, `parser_calc.yaml`:** This defines the language syntax and how to build an AST.
+
     ```yaml
     # A grammar that handles precedence (* before +) and parentheses.
     start_rule: expression
@@ -56,13 +65,15 @@ Let's build a simple calculator that can parse `2 + 3` and transpile it to `(add
         sequence:
           - { rule: term }
           - zero_or_more:
-              sequence: [ { rule: _ }, { rule: add_op }, { rule: _ }, { rule: term } ]
+              sequence:
+                [{ rule: _ }, { rule: add_op }, { rule: _ }, { rule: term }]
       term:
         ast: { structure: "left_associative_op" }
         sequence:
           - { rule: factor }
           - zero_or_more:
-              sequence: [ { rule: _ }, { rule: mul_op }, { rule: _ }, { rule: factor } ]
+              sequence:
+                [{ rule: _ }, { rule: mul_op }, { rule: _ }, { rule: factor }]
       factor:
         ast: { promote: true }
         choice:
@@ -92,6 +103,7 @@ Let's build a simple calculator that can parse `2 + 3` and transpile it to `(add
     ```
 
 2.  **Create your transpiler grammar, `transpiler_calc.yaml`:** This defines how to convert the AST into a new string.
+
     ```yaml
     rules:
       binary_op:
@@ -113,6 +125,7 @@ Let's build a simple calculator that can parse `2 + 3` and transpile it to `(add
     ```
 
 3.  **Use the Koine engine in `main.py`:**
+
     ```python
     import yaml
     from koine.parser import Parser, Transpiler
@@ -147,6 +160,7 @@ Let's build a simple calculator that can parse `2 + 3` and transpile it to `(add
     ```
 
 4.  **Run it:**
+
     ```
     Intermediate AST:
     {
@@ -202,6 +216,7 @@ This document describes the data-driven grammar format for the Koine parser. The
 The core philosophy is to separate the _what_ from the _how_. You define _what_ the language looks like and _what_ the output should be, and the Koine engine handles _how_ to parse and transform it.
 
 This guide will walk through five primary use cases, showing how to add complexity at each stage:
+
 1.  **Validation:** Checking if an input string conforms to a grammar.
 2.  **AST Generation:** Parsing an input string into a clean, semantic Abstract Syntax Tree.
 3.  **Transpilation:** Transforming the AST into a new string format (e.g., infix math to LISP).
@@ -451,6 +466,7 @@ This is the full power of the pipeline. We use two separate grammar files: one f
 First, we use the `ast_calculator.yaml` from Use Case 2 to produce the AST. Then, we create a new file to define the LISP transpilation rules.
 
 **`lisp_transpiler.yaml`**
+
 ```yaml
 rules:
   binary_op:
@@ -509,14 +525,23 @@ The parser produces the following AST, which becomes the input for the transpile
       "tag": "binary_op",
       "op": { "tag": "add_op", "text": "-", "line": 1, "col": 5 },
       "left": { "tag": "number", "text": "2", "line": 1, "col": 3, "value": 2 },
-      "right": { "tag": "number", "text": "3", "line": 1, "col": 7, "value": 3 },
-      "line": 1, "col": 5
+      "right": {
+        "tag": "number",
+        "text": "3",
+        "line": 1,
+        "col": 7,
+        "value": 3
+      },
+      "line": 1,
+      "col": 5
     },
     "right": { "tag": "number", "text": "4", "line": 1, "col": 13, "value": 4 },
-    "line": 1, "col": 11
+    "line": 1,
+    "col": 11
   },
   "right": { "tag": "number", "text": "5", "line": 1, "col": 19, "value": 5 },
-  "line": 1, "col": 17
+  "line": 1,
+  "col": 17
 }
 ```
 
@@ -533,12 +558,14 @@ Final Output: (pow (mul (sub 2 3) 4) 5)
 **Goal:** To handle context-sensitive syntax (like Python's indentation) and perform stateful transformations (like emitting `let` only for the first variable assignment).
 
 This requires two new features:
+
 1.  **The `lexer` block:** A top-level key in the parser grammar that defines tokens, offloading work like whitespace and comment handling from the main parser rules. It can also emit special `INDENT`/`DEDENT` tokens.
 2.  **Stateful transpiler directives:** `state_set` and conditional `cases` that can check the transpiler's internal state.
 
 #### Example: Transpiling Python to JavaScript
 
 **`py_parser.yaml` (Snippet)**
+
 ```yaml
 # A top-level key to define tokens
 lexer:
@@ -613,6 +640,7 @@ Parsing the Python code with `py_parser.yaml` yields the following AST. This str
 ```
 
 **`py_to_js_transpiler.yaml`**
+
 ```yaml
 rules:
   function_definition:
@@ -631,7 +659,7 @@ rules:
   assignment:
     cases:
       # If 'state.vars.{target}' does not exist...
-      - if: { path: 'state.vars.{target}', negate: true }
+      - if: { path: "state.vars.{target}", negate: true }
         # ...then use the template with 'let'
         then: "let {target} = {value};"
       # Otherwise, use the default template without 'let'
@@ -660,6 +688,7 @@ if parse_result['status'] == 'success':
 **Result:** The transpiler correctly handles indentation and uses `let` only for the first assignment to each variable.
 
 **Input Python Code:**
+
 ```python
 def f(x, y):
     a = 0
@@ -669,13 +698,14 @@ def f(x, y):
 ```
 
 **Output JavaScript Code:**
+
 ```javascript
 function f(x, y) {
-    let a = 0;
-    for (let i = 0; i < y; i++) {
-        a = a + x;
-    }
-    return a;
+  let a = 0;
+  for (let i = 0; i < y; i++) {
+    a = a + x;
+  }
+  return a;
 }
 ```
 
@@ -748,6 +778,7 @@ Parsing the JavaScript code with `js_parser.yaml` yields an AST. The `js_to_py_t
 ```
 
 **`js_to_py_transpiler.yaml`**
+
 ```yaml
 rules:
   function_definition:
@@ -787,17 +818,19 @@ if parse_result['status'] == 'success':
 **Result:** The transpiler correctly indents the body of the Python function.
 
 **Input JavaScript Code:**
+
 ```javascript
 function f(x, y) {
-    let a = 0;
-    for (let i = 0; i < y; i++) {
-        a = a + x;
-    }
-    return a;
+  let a = 0;
+  for (let i = 0; i < y; i++) {
+    a = a + x;
+  }
+  return a;
 }
 ```
 
 **Output Python Code:**
+
 ```python
 def f(x, y):
     a = 0
@@ -812,9 +845,9 @@ def f(x, y):
 
 For a complete guide to Koine's features, including detailed explanations and examples for every directive, please see the dedicated documentation files:
 
--   **[PARSING.md](./PARSING.md)**: Covers everything related to parsing text into an AST, from grammar basics to advanced features like lookaheads and lexer-based tokenization.
+- **[PARSING.md](./PARSING.md)**: Covers everything related to parsing text into an AST, from grammar basics to advanced features like lookaheads and lexer-based tokenization.
 
--   **[TRANSPILING.md](./TRANSPILING.md)**: Covers everything related to transforming an AST into text, including conditional logic, state management, and generating indented output.
+- **[TRANSPILING.md](./TRANSPILING.md)**: Covers everything related to transforming an AST into text, including conditional logic, state management, and generating indented output.
 
 ## Author
 
