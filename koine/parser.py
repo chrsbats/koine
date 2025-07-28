@@ -324,6 +324,10 @@ class AstBuilderVisitor(NodeVisitor):
                isinstance(children[2], dict) and children[2].get('tag') == 'literal':
                 return children[1]
 
+            is_sequence = 'sequence' in rule_def
+            if is_sequence:
+                return children  # Always return a list for a promoted sequence
+
             if len(children) > 1:
                 return children
             return children[0] if children else None

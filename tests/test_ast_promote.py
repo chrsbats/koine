@@ -88,6 +88,29 @@ def test_nested_promote_in_quantifier_flattens_children():
     assert cleaned_result_ast == expected_ast
 
 
+def test_promoted_sequence_with_one_child_returns_list():
+    """
+    Tests that a promoted sequence with only one resulting child still
+    returns a list containing that one child.
+    """
+    grammar_def = yaml.safe_load(PROMOTED_SEQUENCE_GRAMMAR)
+    parser = Parser(grammar_def)
+
+    source_code = "a"
+    expected_ast = [
+        {'tag': 'item', 'text': 'a'}
+    ]
+
+    try:
+        result_ast = parser.parse(source_code)
+    except Exception as e:
+        pytest.fail(f"Parsing failed unexpectedly:\n{e}", pytrace=False)
+
+    cleaned_result_ast = clean_ast(result_ast)
+
+    assert cleaned_result_ast == expected_ast
+
+
 # This grammar tests a promoted rule that contains a sequence with a quantifier.
 # The expected result is a flat list of children.
 PROMOTED_SEQUENCE_GRAMMAR = """

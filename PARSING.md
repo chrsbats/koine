@@ -96,7 +96,7 @@ The raw parse tree is messy. The `ast` block is a dictionary you add to a rule t
 | Key         | Description                                                                        |
 | :---------- | :--------------------------------------------------------------------------------- |
 | `discard`   | Completely removes the node from the AST. Essential for whitespace and punctuation.|
-| `promote`   | Replaces the node with its child/children, simplifying the tree.                   |
+| `promote`   | Replaces the node with its child or children. When used on a `sequence` rule, this *always* produces a Python `list` of the resulting child nodes, even if there is only one. This provides a consistent data structure. When used on a `choice` rule, it promotes the single chosen child. |
 | `leaf`      | Marks a node as a terminal. Its text is captured, but its children aren't processed.|
 | `tag`       | Renames the node in the AST, decoupling syntax from semantic meaning.              |
 | `type`      | On a `leaf` node, converts its text to a `number`, `bool`, or `null` value.        |
