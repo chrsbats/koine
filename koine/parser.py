@@ -605,64 +605,160 @@ class Parser:
     """The main entry point that orchestrates the parsing process."""
     @classmethod
     def from_file(cls, filepath: str):
-        """Loads a grammar from a main YAML file, processing `includes` directives."""
-        
-        def load_and_merge(file_path_obj: Path):
-            current_dir = file_path_obj.parent
-            with open(file_path_obj, 'r') as f:
-                grammar = yaml.safe_load(f) or {}
+        """Loads a grammar from a main YAML file."""
+        return cls({'default': filepath})
 
+    def __init__(self, grammars: dict):
+        # Heuristic to detect old-style call: Parser(single_grammar_dict)
+        # A grammar dict has 'rules' or 'start_rule'. A dict of grammars does not.
+        if isinstance(grammars, dict) and ('rules' in grammars or 'start_rule' in grammars):
+            grammars = {'default': grammars}
+
+        if not isinstance(grammars, dict):
+            raise ValueError("Parser must be initialized with a dictionary.")
+
+        self.grammars = {}
+        self.default_grammar_name = None
+
+        if not grammars:
+            return
+
+        # Check if we are in file mode or dict mode
+        first_key = next(iter(grammars.keys()))
+        first_val = grammars[first_key]
+
+        if isinstance(first_val, str): # File mode
+            for name, filepath in grammars.items():
+                self.grammars[name] = self._compile_grammar_from_file(filepath)
+            self.default_grammar_name = first_key
+        elif isinstance(first_val, dict): # Dict mode (or backward-compat single dict)
+             for name, grammar_dict in grammars.items():
+                # For dicts, we need a base path for relative includes/subgrammars. CWD is a reasonable default.
+                resolved_grammar = self._load_and_resolve(grammar_dict, Path.cwd())
+                self.grammars[name] = self._compile_grammar_from_dict(resolved_grammar)
+             self.default_grammar_name = first_key
+        else:
+            raise ValueError("`grammars` must be a dictionary of file paths or a dictionary of grammar definitions.")
+
+    def _compile_grammar_from_file(self, filepath: str):
+        grammar_dict = self._load_and_resolve_from_path(Path(filepath))
+        return self._compile_grammar_from_dict(grammar_dict)
+    
+    def _load_and_resolve_from_path(self, file_path_obj: Path):
+        with open(file_path_obj, 'r') as f:
+            grammar = yaml.safe_load(f) or {}
+        return self._load_and_resolve(grammar, file_path_obj.parent)
+
+    def _load_and_resolve(self, grammar_dict: dict, base_path: Path):
+        # Deep copy to avoid modifying original dicts passed by reference
+        grammar = json.loads(json.dumps(grammar_dict))
+
+        # Handle includes first (non-namespaced merge)
+        if 'includes' in grammar:
             final_rules = {}
-
-            if 'includes' in grammar:
-                for include_file in grammar['includes']:
-                    # Resolve include path relative to the CURRENT file's path
-                    include_path = current_dir / include_file
-                    included_grammar = load_and_merge(include_path)
-                    final_rules.update(included_grammar.get('rules', {}))
-                del grammar['includes']
+            for include_file in grammar.pop('includes'):
+                include_path = base_path / include_file
+                included_grammar = self._load_and_resolve_from_path(include_path)
+                final_rules.update(included_grammar.get('rules', {}))
             
             final_rules.update(grammar.get('rules', {}))
             grammar['rules'] = final_rules
+
+        # Now handle subgrammars (namespaced merge)
+        rules = grammar.get('rules', {})
+        if not rules: return grammar
+
+        def walker(node):
+            if isinstance(node, list):
+                for i, item in enumerate(node):
+                    if isinstance(item, dict) and 'subgrammar' in item:
+                        self._process_subgrammar_node(item, node, i, rules, base_path)
+                    else:
+                        walker(item)
+            elif isinstance(node, dict):
+                for key, value in list(node.items()):
+                    if isinstance(value, dict) and 'subgrammar' in value:
+                        self._process_subgrammar_node(value, node, key, rules, base_path)
+                    else:
+                        walker(value)
+        walker(rules)
+        return grammar
+
+    def _process_subgrammar_node(self, subgrammar_item, parent_node, key_or_index, all_rules, base_path):
+        subgrammar_path_str = subgrammar_item['subgrammar']
+        subgrammar_path = base_path / subgrammar_path_str
+        
+        child_grammar_dict = self._load_and_resolve_from_path(subgrammar_path)
+        child_rules = child_grammar_dict.get('rules', {})
+        child_start_rule = child_grammar_dict.get('start_rule')
+
+        if not child_start_rule:
+            raise ValueError(f"Subgrammar '{subgrammar_path_str}' must have a 'start_rule'.")
             
-            return grammar
+        namespace = subgrammar_path.stem.replace('-', '_')
+        child_rule_names = set(child_rules.keys())
 
-        final_grammar = load_and_merge(Path(filepath))
-        return cls(final_grammar)
+        def rewrite_rule_refs_in_subgrammar(node):
+            if isinstance(node, list):
+                for item in node:
+                    rewrite_rule_refs_in_subgrammar(item)
+            elif isinstance(node, dict):
+                if 'rule' in node and node['rule'] in child_rule_names:
+                    node['rule'] = f"{namespace}__{node['rule']}"
+                for value in node.values():
+                    rewrite_rule_refs_in_subgrammar(value)
+        
+        for name, rule_def in child_rules.items():
+            namespaced_name = f"{namespace}__{name}"
+            # Deep copy to avoid modifying a cached grammar dict
+            new_rule_def = json.loads(json.dumps(rule_def))
+            rewrite_rule_refs_in_subgrammar(new_rule_def)
+            all_rules[namespaced_name] = new_rule_def
+        
+        # Replace the 'subgrammar' item with a 'rule' reference
+        new_rule_ref = {'rule': f"{namespace}__{child_start_rule}"}
+        original_item = subgrammar_item.copy()
+        del original_item['subgrammar']
+        new_rule_ref.update(original_item)
+        
+        if isinstance(parent_node, list):
+            parent_node[key_or_index] = new_rule_ref
+        elif isinstance(parent_node, dict):
+            parent_node[key_or_index] = new_rule_ref
 
-    def __init__(self, grammar_dict: dict):
-        self.grammar_dict = self._normalize_grammar(grammar_dict)
-        self.is_token_grammar = 'lexer' in self.grammar_dict
-        self._lint_grammar()
+    def _compile_grammar_from_dict(self, grammar_dict):
+        config = {}
+        config['grammar_dict'] = self._normalize_grammar(grammar_dict)
+        config['is_token_grammar'] = 'lexer' in config['grammar_dict']
+        self._lint_grammar(config['grammar_dict'])
         
-        if self.is_token_grammar:
-            self.lexer = StatefulLexer(self.grammar_dict['lexer'])
+        if config['is_token_grammar']:
+            config['lexer'] = StatefulLexer(config['grammar_dict']['lexer'])
         
-        self.grammar_string = transpile_grammar(self.grammar_dict)
+        config['grammar_string'] = transpile_grammar(config['grammar_dict'])
         try:
-            self.grammar = Grammar(self.grammar_string)
+            config['grammar'] = Grammar(config['grammar_string'])
         except (LeftRecursionError, VisitationError) as e:
             raise ValueError(f"Left-recursion detected in grammar. Parsimonious error: {e}")
-        self.start_rule = self.grammar_dict.get('start_rule', 'start')
+        config['start_rule'] = config['grammar_dict'].get('start_rule', 'start')
         
-        # For richer error messages
-        self.expression_map = {self.grammar[k]: k for k in self.grammar_dict['rules']}
+        return config
 
-    def _lint_grammar(self):
+    def _lint_grammar(self, grammar_dict):
         """
         Performs static analysis on the grammar to find common issues like
         unreachable rules.
         """
-        self._check_for_unreachable_rules()
-        self._check_for_always_empty_rules()
+        self._check_for_unreachable_rules(grammar_dict)
+        self._check_for_always_empty_rules(grammar_dict)
 
-    def _check_for_unreachable_rules(self):
+    def _check_for_unreachable_rules(self, grammar_dict):
         """
         Checks for rules that are defined in the grammar but can never be
         reached from the start_rule.
         """
-        all_rules = set(self.grammar_dict['rules'].keys())
-        start_rule = self.grammar_dict.get('start_rule', 'start')
+        all_rules = set(grammar_dict['rules'].keys())
+        start_rule = grammar_dict.get('start_rule', 'start')
         if start_rule not in all_rules:
             # This will be caught later by parsimonious, but it prevents
             # the linter from running on an invalid start_rule.
@@ -691,13 +787,13 @@ class Parser:
             
             reachable.add(current_rule)
             
-            if current_rule not in self.grammar_dict['rules']:
+            if current_rule not in grammar_dict['rules']:
                 # This indicates a reference to a non-existent rule.
                 # Parsimonious will catch this with a better error message,
                 # so we can ignore it here.
                 continue
 
-            rule_definition = self.grammar_dict['rules'][current_rule]
+            rule_definition = grammar_dict['rules'][current_rule]
             references = find_references(rule_definition)
             
             for ref in references:
@@ -708,7 +804,7 @@ class Parser:
         if unreachable:
             raise ValueError(f"Unreachable rules detected: {', '.join(sorted(list(unreachable)))}")
 
-    def _is_def_always_empty(self, rule_def, memo):
+    def _is_def_always_empty(self, rule_def, memo, grammar_dict):
         if not isinstance(rule_def, dict):
             return False
 
@@ -716,11 +812,11 @@ class Parser:
         if ast_config.get('discard'): return True
         if 'structure' in ast_config: return False
 
-        if 'rule' in rule_def: return self._is_rule_always_empty(rule_def['rule'], memo)
+        if 'rule' in rule_def: return self._is_rule_always_empty(rule_def['rule'], memo, grammar_dict)
         
-        if self.is_token_grammar and 'token' in rule_def:
+        if grammar_dict.get('lexer') and 'token' in rule_def:
             token_type = rule_def['token']
-            for spec in self.grammar_dict.get('lexer', {}).get('tokens', []):
+            for spec in grammar_dict.get('lexer', {}).get('tokens', []):
                 if spec.get('token') == token_type:
                     return spec.get('action') == 'skip' or spec.get('ast', {}).get('discard', False)
             return False
@@ -732,42 +828,42 @@ class Parser:
             return True
         
         if 'choice' in rule_def:
-            return all(self._is_def_always_empty(alt, memo) for alt in rule_def['choice'])
+            return all(self._is_def_always_empty(alt, memo, grammar_dict) for alt in rule_def['choice'])
 
         if 'sequence' in rule_def:
             if any(isinstance(part, dict) and 'name' in part.get('ast', {}) for part in rule_def['sequence']):
                 return False
-            return all(self._is_def_always_empty(part, memo) for part in rule_def['sequence'])
+            return all(self._is_def_always_empty(part, memo, grammar_dict) for part in rule_def['sequence'])
 
         for quantifier in ['one_or_more', 'zero_or_more', 'optional']:
             if quantifier in rule_def:
-                return self._is_def_always_empty(rule_def[quantifier], memo)
+                return self._is_def_always_empty(rule_def[quantifier], memo, grammar_dict)
 
         return False
 
-    def _is_rule_always_empty(self, rule_name, memo):
+    def _is_rule_always_empty(self, rule_name, memo, grammar_dict):
         if rule_name in memo:
             return memo[rule_name]
         
-        if rule_name not in self.grammar_dict['rules']:
+        if rule_name not in grammar_dict['rules']:
             return False
 
         memo[rule_name] = False
         
-        rule_def = self.grammar_dict['rules'][rule_name]
-        is_empty = self._is_def_always_empty(rule_def, memo)
+        rule_def = grammar_dict['rules'][rule_name]
+        is_empty = self._is_def_always_empty(rule_def, memo, grammar_dict)
         
         memo[rule_name] = is_empty
         return is_empty
 
-    def _check_for_always_empty_rules(self):
+    def _check_for_always_empty_rules(self, grammar_dict):
         """
         Checks for rules that are not explicitly 'discard' but will always
         produce an empty AST node due to their structure.
         """
         memo = {}
         implicitly_empty_rules = []
-        for rule_name, rule_def in self.grammar_dict['rules'].items():
+        for rule_name, rule_def in grammar_dict['rules'].items():
             if rule_def.get('ast', {}).get('discard'):
                 continue
             
@@ -775,7 +871,7 @@ class Parser:
             if is_lookahead_rule:
                 continue
             
-            if self._is_rule_always_empty(rule_name, memo):
+            if self._is_rule_always_empty(rule_name, memo, grammar_dict):
                 implicitly_empty_rules.append(rule_name)
         
         if implicitly_empty_rules:
@@ -848,29 +944,40 @@ class Parser:
             walker(rule_def)
         return new_grammar
 
-    def parse(self, text: str, rule: str = None):
-        start_rule = rule if rule is not None else self.start_rule
+    def parse(self, text: str, rule: str = None, grammar: str = None):
+        grammar_name = grammar if grammar is not None else self.default_grammar_name
+        if not grammar_name or grammar_name not in self.grammars:
+            raise ValueError(f"Grammar '{grammar_name}' not found. Available grammars: {list(self.grammars.keys())}")
+        
+        config = self.grammars[grammar_name]
+        start_rule = rule if rule is not None else config['start_rule']
         finder = LineColumnFinder(text)
+        tokens = None
         
         try:
-            if self.is_token_grammar:
-                tokens = self.lexer.tokenize(text)
+            if config.get('is_token_grammar'):
+                tokens = config['lexer'].tokenize(text)
                 token_string = " ".join([t.type for t in tokens])
-                visitor = AstBuilderVisitor(self.grammar_dict, finder, tokens)
-                tree = self.grammar[start_rule].parse(token_string)
+                visitor = AstBuilderVisitor(config['grammar_dict'], finder, tokens)
+                tree = config['grammar'][start_rule].parse(token_string)
             else:
-                visitor = AstBuilderVisitor(self.grammar_dict, finder)
-                tree = self.grammar[start_rule].parse(text)
+                visitor = AstBuilderVisitor(config['grammar_dict'], finder)
+                tree = config['grammar'][start_rule].parse(text)
             
             ast = visitor.visit(tree)
             return {"status": "success", "ast": ast}
 
         except (ParseError, IncompleteParseError, SyntaxError, IndentationError) as e:
-            if isinstance(e, (ParseError, IncompleteParseError)) and self.is_token_grammar:
+            if isinstance(e, (ParseError, IncompleteParseError)) and config.get('is_token_grammar'):
                 # Find the token corresponding to the error position in the token string
+                if tokens is None:
+                    # This can happen if the lexer fails before tokenization is complete
+                    return {"status": "error", "message": str(e)}
+                
                 error_token = None
                 
-                # Find which token index corresponds to the character position of the error
+                # Recalculate token_string as it's not available in this scope
+                token_string = " ".join([t.type for t in tokens])
                 error_token_idx = len(token_string[:e.pos].split(' ')) - 1
                 
                 if error_token_idx < len(tokens):
@@ -890,9 +997,10 @@ class Parser:
                 else: # It's a ParseError
                     expected_things = set()
                     if hasattr(e, 'exprs'):
+                        expression_map = {config['grammar'][k]: k for k in config['grammar_dict']['rules']}
                         for expr in e.exprs:
-                            if expr in self.expression_map:
-                                expected_things.add(self.expression_map[expr])
+                            if expr in expression_map:
+                                expected_things.add(expression_map[expr])
                             elif isinstance(expr, Literal) and expr.literal:
                                 expected_things.add(f'literal "{expr.literal}"')
                     
@@ -910,8 +1018,8 @@ class Parser:
             else: # SyntaxError or IndentationError from our lexer
                  return {"status": "error", "message": str(e)}
 
-    def validate(self, text: str):
-        result = self.parse(text)
+    def validate(self, text: str, grammar: str = None):
+        result = self.parse(text, grammar=grammar)
         if result['status'] == 'success':
             return True, 'success'
         else:

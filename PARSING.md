@@ -51,14 +51,21 @@ rules:
 
 At this stage, without any AST directives, Koine produces a raw, verbose parse tree that directly mirrors the grammar structure. It's functional but noisy. We'll clean this up next.
 
-### Organizing Your Grammar with `includes`
+### Organizing Your Grammar with `includes` and `subgrammar`
 
-For larger grammars, you can split your rules across multiple files using the top-level `includes` key. This is supported when loading a grammar with `Parser.from_file()`. All rules from the included files are merged, with rules in the main file taking precedence in case of a name conflict.
+For larger grammars, you can split your rules across multiple files using two different directives: `includes` for sharing common libraries, and `subgrammar` for creating modular, namespaced components.
+
+#### Using `includes` for Shared Libraries
+
+The top-level `includes` key is for sharing a common set of rules across multiple grammars. It performs a simple, non-namespaced merge. All rules from the included files are loaded into the main grammar as if they were defined there. If a rule name exists in both the main grammar and an included file, the rule from the main grammar takes precedence.
+
+Use `includes` when you have a library of common definitions (e.g., for whitespace, numbers, or identifiers) that you want to reuse.
 
 Paths to included files are relative to the file that contains the `includes` directive.
 
 **`common_rules.yaml`**
 ```yaml
+# A library of common, reusable rules.
 rules:
   identifier:
     ast: { leaf: true }
@@ -78,12 +85,86 @@ start_rule: assignment
 rules:
   assignment:
     sequence:
-      - { rule: identifier }
+      - { rule: identifier } # 'identifier' is used directly from common_rules.yaml
       - { rule: _ }
       - { literal: "=", ast: { discard: true } }
       - { rule: _ }
       - { rule: identifier }
 ```
+
+#### Using `subgrammar` for Modular Components
+
+The `subgrammar` directive is used inside a rule definition to delegate parsing to another, self-contained grammar file. This is for breaking a complex language into smaller, independently testable parts.
+
+When Koine encounters `{ subgrammar: "path/to/file.yaml" }`, it:
+1.  Loads the subgrammar file.
+2.  Namespaces all rules from the subgrammar by prefixing them with the subgrammar's filename (e.g., `rule_name` in `path.yaml` becomes `path__rule_name`).
+3.  Merges these namespaced rules into the parent grammar.
+4.  Replaces the `{ subgrammar: ... }` directive with a call to the subgrammar's namespaced `start_rule`.
+
+**`path_parser.yaml`**
+```yaml
+# A self-contained parser for just file paths.
+start_rule: path
+rules:
+  path:
+    ast: { tag: "path" }
+    sequence: [ { rule: segment }, { literal: "." }, { rule: segment }]
+  segment:
+    ast: { leaf: true }
+    regex: "[a-z]+"
+```
+
+**`main_cli_parser.yaml`**
+```yaml
+start_rule: command
+rules:
+  command:
+    ast: { tag: "command" }
+    sequence:
+      - { literal: "COPY" }
+      - { rule: _ }
+      - { subgrammar: "path_parser.yaml", ast: {name: "source"} } # Delegate to path_parser.yaml
+      - { rule: _ }
+      - { subgrammar: "path_parser.yaml", ast: {name: "dest"} }
+  _:
+    ast: { discard: true }
+    regex: "[ \\t]+"
+```
+When parsing with `main_cli_parser.yaml`, a `COPY` command would expect two parts that can be parsed by `path_parser.yaml`. The `subgrammar` directive makes `path_parser.yaml` a reusable component.
+
+### Testing Modular Grammars
+
+The `includes` and `subgrammar` directives are powerful, but they present a testing challenge: how do you test a "structural" grammar in isolation if it's designed to be merged into a larger one?
+
+Koine solves this by allowing the `Parser` to be initialized with multiple, named grammar configurations. You can then select which grammar to use for each call to `parse()` or `validate()`.
+
+**Example: Testing Structural vs. Full Grammars**
+```python
+# In your test setup
+from koine.parser import Parser
+
+# Initialize the parser once with all required grammar configurations.
+parser = Parser({
+    "structural": "path/to/structural_grammar.yaml", # A version with regex stubs
+    "full": "path/to/full_grammar.yaml"             # The version with subgrammars
+})
+
+# --- In a test for the structural grammar ---
+def test_structure():
+    source = "..."
+    # Select the 'structural' grammar for this test.
+    result = parser.parse(source, grammar="structural")
+    # ... assert against the simpler AST ...
+
+# --- In a test for the full, merged grammar ---
+def test_full_parsing():
+    source = "..."
+    # Select the 'full' grammar for this test.
+    result = parser.parse(source, grammar="full")
+    # ... assert against the detailed AST from the merged grammar ...
+```
+If `grammar` is not specified in the `parse` call, it defaults to the first one defined in the dictionary.
 
 Koine also performs validation when a `Parser` is created. For instance, it will raise an error if your grammar contains `rules` that can never be reached from the `start_rule`. This helps find typos and dead code in your grammar definitions.
 
@@ -96,7 +177,7 @@ The raw parse tree is messy. The `ast` block is a dictionary you add to a rule t
 | Key         | Description                                                                        |
 | :---------- | :--------------------------------------------------------------------------------- |
 | `discard`   | Completely removes the node from the AST. Essential for whitespace and punctuation.|
-| `promote`   | Replaces the node with its child or children. When used on a `sequence` rule, this *always* produces a Python `list` of the resulting child nodes, even if there is only one. This provides a consistent data structure. When used on a `choice` rule, it promotes the single chosen child. |
+| `promote`   | Replaces the node with its child or children. Its behavior depends on the rule type: on a **`sequence`** or **quantifier** (`zero_or_more`, `one_or_more`, `optional`), it _always_ returns a list of children. This ensures a consistent structure for list-like rules. On a **`choice`**, it promotes the single chosen child node. |
 | `leaf`      | Marks a node as a terminal. Its text is captured, but its children aren't processed.|
 | `tag`       | Renames the node in the AST, decoupling syntax from semantic meaning.              |
 | `type`      | On a `leaf` node, converts its text to a `number`, `bool`, or `null` value.        |

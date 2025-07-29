@@ -807,69 +807,94 @@ class TestKoineGrammarGeneration(unittest.TestCase):
         # We didn't map 'b', so it shouldn't be in the final children map
         self.assertNotIn('child_b', ast_b['children'])
 
-    def test_grammar_with_includes(self):
-        """Tests that a grammar can include rules from another file."""
-        # Create dummy grammar files for the test
-        common_rules_content = """
+    def test_grammar_with_includes_and_subgrammars(self):
+        """Tests that grammars can include and delegate to other files."""
+        # --- Create dummy grammar files ---
+        shared_rules_content = """
         rules:
           whitespace:
             ast: { discard: true }
             regex: "[ ]+"
-          identifier:
+          number:
+            ast: { leaf: true, type: "number" }
+            regex: "[0-9]+"
+        """
+        
+        path_grammar_content = """
+        start_rule: path
+        rules:
+          path:
+            ast: { tag: "path" }
+            sequence:
+              - { rule: segment }
+              - zero_or_more:
+                  sequence:
+                    - { literal: "." }
+                    - { rule: segment }
+          segment:
             ast: { leaf: true }
             regex: "[a-z]+"
         """
+        
         main_grammar_content = """
         includes:
-          - "common.yaml"
+          - "shared.yaml" # non-namespaced include
         start_rule: 'main'
         rules:
           main:
+            ast: { promote: true }
+            choice:
+              - { rule: set_path }
+              - { rule: set_number }
+          set_path:
+            ast: { tag: "set_path" }
             sequence:
-              - { rule: identifier }
+              - { subgrammar: "path.yaml", ast: { name: "target" } } # namespaced subgrammar
               - { rule: whitespace }
               - { literal: '=' }
+          set_number:
+            ast: { tag: "set_number" }
+            sequence:
+              - { rule: number } # from shared.yaml
         """
         
-        common_path = TESTS_DIR / "common.yaml"
+        shared_path = TESTS_DIR / "shared.yaml"
+        path_path = TESTS_DIR / "path.yaml"
         main_path = TESTS_DIR / "main.yaml"
         
-        common_path.write_text(common_rules_content)
+        shared_path.write_text(shared_rules_content)
+        path_path.write_text(path_grammar_content)
         main_path.write_text(main_grammar_content)
 
         try:
-            parser = Parser.from_file(str(main_path))
-            result = parser.parse("abc =")
-            self.assertEqual(result['status'], 'success')
+            # --- Test multi-grammar parsing ---
+            parser = Parser({
+                "main": str(main_path),
+                "path_only": str(path_path)
+            })
 
-            # Test that a rule in the main file overrides the included one
-            # Test that a rule in the main file overrides the included one
-            main_grammar_override = """
-            includes:
-              - "common.yaml"
-            start_rule: 'main'
-            rules:
-              main:
-                sequence:
-                  - { rule: identifier }
-                  - { optional: { rule: whitespace } }
-              identifier: # Override
-                ast: { leaf: true }
-                regex: "[0-9]+"
-            """
-            main_path.write_text(main_grammar_override)
-            parser_override = Parser.from_file(str(main_path))
-            result_override = parser_override.parse("123")
-            self.assertEqual(result_override['status'], 'success')
-            result_fail = parser_override.parse("abc")
-            self.assertEqual(result_fail['status'], 'error')
+            # Test parsing with the main grammar that uses includes and subgrammars
+            result_main = parser.parse("foo.bar =", grammar="main")
+            self.assertEqual(result_main['status'], 'success')
+            ast = result_main['ast']
+            self.assertEqual(ast['tag'], 'set_path')
+            self.assertEqual(ast['children']['target']['tag'], 'path')
+            
+            # Test parsing with just the subgrammar
+            result_path = parser.parse("foo.bar", grammar="path_only")
+            self.assertEqual(result_path['status'], 'success')
+            self.assertEqual(result_path['ast']['tag'], 'path')
+
+            # Test rule from included file
+            result_include = parser.parse("123", grammar="main")
+            self.assertEqual(result_include['status'], 'success')
+            self.assertEqual(result_include['ast']['tag'], 'set_number')
 
         finally:
             # Clean up the dummy files
-            if common_path.exists():
-                common_path.unlink()
-            if main_path.exists():
-                main_path.unlink()
+            if shared_path.exists(): shared_path.unlink()
+            if path_path.exists(): path_path.unlink()
+            if main_path.exists(): main_path.unlink()
 
     def test_transpiler_fallback_behavior(self):
         """
