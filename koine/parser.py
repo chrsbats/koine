@@ -106,10 +106,13 @@ class StatefulLexer:
 # 1. GRAMMAR-TO-STRING TRANSPILER
 # ==============================================================================
 
-def transpile_rule(rule_definition, is_token_grammar=False):
+def transpile_rule(rule_definition, is_token_grammar=False, rule_name=None):
     """Recursively transpiles a single rule dictionary into a Parsimonious grammar string component."""
     if not isinstance(rule_definition, dict):
-        raise ValueError(f"Rule definition must be a dictionary, got {type(rule_definition)}")
+        error_msg = f"Rule definition must be a dictionary, but got {type(rule_definition).__name__}: {rule_definition!r}"
+        if rule_name:
+            error_msg += f" (in rule '{rule_name}')"
+        raise ValueError(error_msg)
 
     rule_keys = {
         'literal', 'regex', 'rule', 'choice', 'sequence',
@@ -149,7 +152,7 @@ def transpile_rule(rule_definition, is_token_grammar=False):
     elif rule_type in ['choice', 'sequence']:
         if not value:
             return '("")?' if rule_type == 'sequence' else (_ for _ in ()).throw(ValueError("Choice cannot be empty"))
-        parts = [transpile_rule(part, is_token_grammar) for part in value]
+        parts = [transpile_rule(part, is_token_grammar, rule_name=rule_name) for part in value]
         joiner = " / " if rule_type == 'choice' else " "
         joined_parts = joiner.join(parts)
         # For a sequence of one item, Parsimonious optimizes `(foo)` to just `foo`.
@@ -162,11 +165,11 @@ def transpile_rule(rule_definition, is_token_grammar=False):
         # Postfix operators
         if rule_type in ['zero_or_more', 'one_or_more', 'optional']:
             op_map = {'zero_or_more': '*', 'one_or_more': '+', 'optional': '?'}
-            return f"({transpile_rule(value, is_token_grammar)}){op_map[rule_type]}"
+            return f"({transpile_rule(value, is_token_grammar, rule_name=rule_name)}){op_map[rule_type]}"
         # Prefix operators
         else:  # positive_lookahead, negative_lookahead
             op_map = {'positive_lookahead': '&', 'negative_lookahead': '!'}
-            return f"{op_map[rule_type]}({transpile_rule(value, is_token_grammar)})"
+            return f"{op_map[rule_type]}({transpile_rule(value, is_token_grammar, rule_name=rule_name)})"
 
 def transpile_grammar(grammar_dict):
     """Takes a full grammar dictionary and transpiles it into a single grammar string."""
@@ -174,7 +177,7 @@ def transpile_grammar(grammar_dict):
         raise ValueError("Grammar definition must have a 'rules' key.")
     
     is_token_grammar = 'lexer' in grammar_dict
-    grammar_lines = [f"{name} = {transpile_rule(rule, is_token_grammar)}" for name, rule in grammar_dict['rules'].items()]
+    grammar_lines = [f"{name} = {transpile_rule(rule, is_token_grammar, rule_name=name)}" for name, rule in grammar_dict['rules'].items()]
     
     if is_token_grammar:
         token_types = {spec['token'] for spec in grammar_dict['lexer']['tokens'] if 'token' in spec}
@@ -295,16 +298,10 @@ class AstBuilderVisitor(NodeVisitor):
             return base_node
 
         if ast_config.get('promote'):
-            if not children: return None
-
-            # If a choice was promoted, its results might be in a nested list
-            if len(children) == 1 and isinstance(children[0], list):
-                children = children[0]
-
-            # After potentially un-nesting a choice, we might still have a list
-            # of children from a sequence that contains a mix of single nodes and
-            # sub-lists (from quantifiers). We need to flatten this list.
             if isinstance(children, list):
+                # The children list can contain arbitrarily nested lists from promoted
+                # quantifiers, choices, or sequences. We need to deeply flatten it
+                # into a single list of AST nodes.
                 # Iteratively and deeply flatten the list. This handles cases
                 # like a promoted quantifier over a promoted rule, which can
                 # create nested lists of children.
@@ -325,12 +322,22 @@ class AstBuilderVisitor(NodeVisitor):
                 return children[1]
 
             is_sequence = 'sequence' in rule_def
-            if is_sequence:
-                return children  # Always return a list for a promoted sequence
+            is_quantifier = 'one_or_more' in rule_def or 'zero_or_more' in rule_def or 'optional' in rule_def
 
+            if is_sequence or is_quantifier:
+                # For promoted sequences and quantifiers, always return a list of children
+                # for a consistent data structure.
+                return children
+
+            # For other promoted rules (e.g., choice, or a direct rule promotion) that
+            # don't match, they produce no node.
+            if not children:
+                return None
+
+            # if there's only one child, return it directly without a list wrapper.
             if len(children) > 1:
                 return children
-            return children[0] if children else None
+            return children[0]
 
         structure_config = ast_config.get('structure')
         if isinstance(structure_config, str):
@@ -415,28 +422,30 @@ class AstBuilderVisitor(NodeVisitor):
             if not is_discarded:
                 child_producing_parts.append(part)
 
-        # When children are from a sequence they are often in a nested list
-        unwrapped_children = children[0] if (children and isinstance(children[0], list) and len(children) == 1) else children
-
+        # `children` is a list of the results from visiting each part of the sequence.
+        # This list is parallel to the `child_producing_parts` list.
         for i, part in enumerate(child_producing_parts):
             if 'ast' in part and 'name' in part['ast']:
                 child_name = part['ast']['name']
-                # Must check against unwrapped_children, which may not be a list
-                safe_children = unwrapped_children if isinstance(unwrapped_children, list) else [unwrapped_children]
-                if i < len(safe_children):
-                    named_children[child_name] = safe_children[i]
+                # The i-th result in `children` corresponds to the i-th non-discarded rule.
+                # If that result is a list (from a promoted rule), it's assigned as a list.
+                if i < len(children):
+                    named_children[child_name] = children[i]
                 else: # Handle optional named children that didn't match
                     named_children[child_name] = []
         
         if named_children:
              base_node['children'] = named_children
-        elif unwrapped_children is None or not unwrapped_children:
-             base_node['children'] = []
         else:
-            if isinstance(unwrapped_children, list):
+             # This logic is for unnamed children, which should be flattened.
+             unwrapped_children = children[0] if (children and isinstance(children[0], list) and len(children) == 1) else children
+             if unwrapped_children is None or not unwrapped_children:
+                base_node['children'] = []
+             else:
+                nodes_to_process = unwrapped_children if isinstance(unwrapped_children, list) else [unwrapped_children]
                 # Deeply flatten the list to handle nested promotions from children.
                 flat_list = []
-                stack = list(reversed(unwrapped_children))
+                stack = list(reversed(nodes_to_process))
                 while stack:
                     item = stack.pop()
                     if isinstance(item, list):
@@ -444,8 +453,6 @@ class AstBuilderVisitor(NodeVisitor):
                     elif item is not None:
                         flat_list.append(item)
                 base_node['children'] = flat_list
-            else:
-                base_node['children'] = unwrapped_children
 
         return base_node
 
@@ -728,7 +735,7 @@ class Parser:
             return all(self._is_def_always_empty(alt, memo) for alt in rule_def['choice'])
 
         if 'sequence' in rule_def:
-            if any('name' in part.get('ast', {}) for part in rule_def['sequence']):
+            if any(isinstance(part, dict) and 'name' in part.get('ast', {}) for part in rule_def['sequence']):
                 return False
             return all(self._is_def_always_empty(part, memo) for part in rule_def['sequence'])
 

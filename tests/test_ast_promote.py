@@ -151,3 +151,173 @@ def test_promoted_rule_with_quantifier_flattens_children():
     cleaned_result_ast = clean_ast(result_ast)
 
     assert cleaned_result_ast == expected_ast
+
+
+# Grammars for testing consistent list returns from quantifiers
+ONE_OR_MORE_GRAMMAR = """
+start_rule: items_list
+rules:
+  items_list:
+    ast: { promote: true }
+    one_or_more:
+      rule: item
+
+  item:
+    ast: { tag: "item", leaf: true }
+    regex: "[a-z]"
+"""
+
+ZERO_OR_MORE_GRAMMAR = """
+start_rule: items_list
+rules:
+  items_list:
+    ast: { promote: true }
+    zero_or_more:
+      rule: item
+
+  item:
+    ast: { tag: "item", leaf: true }
+    regex: "[a-z]"
+"""
+
+OPTIONAL_GRAMMAR = """
+start_rule: optional_item
+rules:
+  optional_item:
+    ast: { promote: true }
+    optional:
+      rule: item
+
+  item:
+    ast: { tag: "item", leaf: true }
+    regex: "[a-z]"
+"""
+
+def test_promoted_one_or_more_with_one_child_returns_list():
+    """
+    Tests that a promoted one_or_more with only one resulting child still
+    returns a list containing that one child for AST consistency.
+    """
+    grammar_def = yaml.safe_load(ONE_OR_MORE_GRAMMAR)
+    parser = Parser(grammar_def)
+
+    source_code = "a"
+    expected_ast = [
+        {'tag': 'item', 'text': 'a'}
+    ]
+
+    try:
+        result_ast = parser.parse(source_code)
+    except Exception as e:
+        pytest.fail(f"Parsing failed unexpectedly:\n{e}", pytrace=False)
+
+    cleaned_result_ast = clean_ast(result_ast)
+    assert cleaned_result_ast == expected_ast
+
+
+def test_promoted_sequence_with_nested_list_child_flattens():
+    """
+    Tests that a promoted sequence with a child that is itself a list
+    (e.g., from a promoted quantifier) correctly flattens into a single list.
+    This reproduces a bug where a structure like `[ node_a, [node_b, node_c] ]`
+    was not flattened, and could sometimes result in only the first element
+    being returned.
+    """
+    grammar = """
+start_rule: main
+rules:
+  main:
+    ast: { promote: true }
+    sequence:
+      - { rule: item_a }
+      - { rule: list_of_b }
+
+  item_a:
+    ast: { tag: "item_a", leaf: true }
+    literal: "a"
+
+  list_of_b:
+    ast: { promote: true } # This makes list_of_b return a list of its children
+    one_or_more:
+      rule: item_b
+
+  item_b:
+    ast: { tag: "item_b", leaf: true }
+    literal: "b"
+"""
+    grammar_def = yaml.safe_load(grammar)
+    parser = Parser(grammar_def)
+    result = parser.parse('abb')
+
+    assert result['status'] == 'success'
+    cleaned_ast = clean_ast(result)
+    expected_ast = [
+        {'tag': 'item_a', 'text': 'a'},
+        {'tag': 'item_b', 'text': 'b'},
+        {'tag': 'item_b', 'text': 'b'}
+    ]
+    assert cleaned_ast == expected_ast
+
+
+def test_promoted_zero_or_more_with_one_child_returns_list():
+    """
+    Tests that a promoted zero_or_more with only one resulting child still
+    returns a list containing that one child for AST consistency.
+    """
+    grammar_def = yaml.safe_load(ZERO_OR_MORE_GRAMMAR)
+    parser = Parser(grammar_def)
+
+    source_code = "a"
+    expected_ast = [
+        {'tag': 'item', 'text': 'a'}
+    ]
+
+    try:
+        result_ast = parser.parse(source_code)
+    except Exception as e:
+        pytest.fail(f"Parsing failed unexpectedly:\n{e}", pytrace=False)
+
+    cleaned_result_ast = clean_ast(result_ast)
+    assert cleaned_result_ast == expected_ast
+
+
+def test_promoted_optional_with_one_child_returns_list():
+    """
+    Tests that a promoted optional with one resulting child returns a list
+    containing that one child for AST consistency.
+    """
+    grammar_def = yaml.safe_load(OPTIONAL_GRAMMAR)
+    parser = Parser(grammar_def)
+
+    source_code = "a"
+    expected_ast = [
+        {'tag': 'item', 'text': 'a'}
+    ]
+
+    try:
+        result_ast = parser.parse(source_code)
+    except Exception as e:
+        pytest.fail(f"Parsing failed unexpectedly:\n{e}", pytrace=False)
+
+    cleaned_result_ast = clean_ast(result_ast)
+    assert cleaned_result_ast == expected_ast
+
+
+def test_promoted_optional_with_no_child_returns_empty_list():
+    """
+    Tests that a promoted optional that does not match returns an empty list,
+    not None.
+    """
+    grammar_def = yaml.safe_load(OPTIONAL_GRAMMAR)
+    parser = Parser(grammar_def)
+
+    source_code = ""
+    expected_ast = []
+
+    try:
+        result_ast = parser.parse(source_code)
+    except Exception as e:
+        pytest.fail(f"Parsing failed unexpectedly:\n{e}", pytrace=False)
+
+    cleaned_result_ast = clean_ast(result_ast)
+    assert cleaned_result_ast == expected_ast
