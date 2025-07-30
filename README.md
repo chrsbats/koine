@@ -86,15 +86,15 @@ Let's build a simple calculator that can parse `2 + 3` and transpile it to `(add
               - { rule: _ }
               - { literal: ")", ast: { discard: true } }
       add_op:
-        ast: { promote: true }
+        ast: { leaf: true }
         choice:
-          - { literal: "+", ast: { tag: "add_op" } }
-          - { literal: "-", ast: { tag: "add_op" } }
+          - { literal: "+" }
+          - { literal: "-" }
       mul_op:
-        ast: { promote: true }
+        ast: { leaf: true }
         choice:
-          - { literal: "*", ast: { tag: "mul_op" } }
-          - { literal: "/", ast: { tag: "mul_op" } }
+          - { literal: "*" }
+          - { literal: "/" }
       number:
         ast: { leaf: true, type: "number" }
         regex: "\\d+"
@@ -119,8 +119,6 @@ Let's build a simple calculator that can parse `2 + 3` and transpile it to `(add
           - if: { path: "node.text", equals: "*" }
             then: "mul"
           - default: "div"
-      power_op:
-        value: "pow"
       number:
         use: "value"
     ```
