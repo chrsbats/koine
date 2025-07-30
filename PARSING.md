@@ -1,6 +1,25 @@
 # Parsing with Koine: From Text to AST
 
+```python
+import yaml
+from koine.parser import Parser
+
+# 1. Load the parser grammar
+with open("parser_calc.yaml", "r") as f:
+    parser_grammar = yaml.safe_load(f)
+
+# 2. Instantiate the parser
+parser = Parser(parser_grammar)
+
+# 3. Run the pipeline
+source_code = "2 + 3"
+parse_result = parser.parse(source_code)
+# parse_result is now {'status': 'success', 'ast': ...}
+```
+
 This document is a comprehensive guide to Koine's parsing capabilities. It will show you how to define a language grammar and use Koine to transform raw source text into a clean, structured, and semantically meaningful Abstract Syntax Tree (AST).
+
+The `parser.parse()` method takes the source text as its primary argument. You can also provide an optional `start_rule="<rule_name>"` argument to begin parsing from a rule other than the default `start_rule` defined in your grammar. This is particularly useful for testing individual grammar rules in isolation.
 
 This guide focuses *exclusively* on the parsing pipeline: **Grammar + Text -> AST**. The subsequent step of transpiling an AST into a new string format is covered separately.
 
@@ -51,56 +70,40 @@ rules:
 
 At this stage, without any AST directives, Koine produces a raw, verbose parse tree that directly mirrors the grammar structure. It's functional but noisy. We'll clean this up next.
 
-### Organizing Your Grammar with `includes` and `subgrammar`
+### Organizing Your Grammar with `subgrammar`
 
-For larger grammars, you can split your rules across multiple files using two different directives: `includes` for sharing common libraries, and `subgrammar` for creating modular, namespaced components.
-
-#### Using `includes` for Shared Libraries
-
-The top-level `includes` key is for sharing a common set of rules across multiple grammars. It performs a simple, non-namespaced merge. All rules from the included files are loaded into the main grammar as if they were defined there. If a rule name exists in both the main grammar and an included file, the rule from the main grammar takes precedence.
-
-Use `includes` when you have a library of common definitions (e.g., for whitespace, numbers, or identifiers) that you want to reuse.
-
-Paths to included files are relative to the file that contains the `includes` directive.
-
-**`common_rules.yaml`**
-```yaml
-# A library of common, reusable rules.
-rules:
-  identifier:
-    ast: { leaf: true }
-    regex: "[a-zA-Z_]+"
-  _:
-    ast: { discard: true }
-    regex: "[ \\t]*"
-```
-
-**`main_grammar.yaml`**
-```yaml
-# Include common definitions from another file
-includes:
-  - "common_rules.yaml"
-
-start_rule: assignment
-rules:
-  assignment:
-    sequence:
-      - { rule: identifier } # 'identifier' is used directly from common_rules.yaml
-      - { rule: _ }
-      - { literal: "=", ast: { discard: true } }
-      - { rule: _ }
-      - { rule: identifier }
-```
-
-#### Using `subgrammar` for Modular Components
+For larger grammars, you can split your rules across multiple files using the `subgrammar` directive to create modular, namespaced components.
 
 The `subgrammar` directive is used inside a rule definition to delegate parsing to another, self-contained grammar file. This is for breaking a complex language into smaller, independently testable parts.
 
-When Koine encounters `{ subgrammar: "path/to/file.yaml" }`, it:
-1.  Loads the subgrammar file.
-2.  Namespaces all rules from the subgrammar by prefixing them with the subgrammar's filename (e.g., `rule_name` in `path.yaml` becomes `path__rule_name`).
+**Syntax**
+
+A rule component that uses a subgrammar has the following structure, where `subgrammar` and `ast` are sibling keys:
+```yaml
+# Inside a `sequence` or `choice` list:
+- subgrammar:
+    file: "path/to/sub.yaml"
+    rule: "entry_rule_in_sub"  # optional
+    placeholder: { regex: "..." } # optional
+  ast:
+    name: "sub_result" # optional
+```
+
+The `subgrammar` block itself contains keys to control which file to load and how to parse it:
+
+| Key           | Description                                                                                                                                              |
+| :------------ | :------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `file`        | **(Required)** The path to the self-contained `.yaml` grammar file to load.                                                                               |
+| `rule`        | (Optional) The name of the rule within the subgrammar to use as the entry point. Defaults to the subgrammar's `start_rule`.                                |
+| `placeholder` | (Optional) A rule definition (e.g., `{ regex: "..." }`) used for structural parsing with `parse_with_placeholders()`. See the section on modular development below. |
+
+The sibling `ast` block works just like it does for any other rule component. It is most commonly used to `name` the result of the subgrammar parse within a sequence, or to `discard` it entirely.
+
+When Koine encounters a `subgrammar` directive during a full parse (`parser.parse()`), it:
+1.  Loads the subgrammar file specified in the `file` key.
+2.  Namespaces all rules from the subgrammar by prefixing them with a PascalCase version of the subgrammar's filename (e.g., `rule_name` in `path_parser.yaml` becomes `PathParser_rule_name`).
 3.  Merges these namespaced rules into the parent grammar.
-4.  Replaces the `{ subgrammar: ... }` directive with a call to the subgrammar's namespaced `start_rule`.
+4.  Replaces the `subgrammar` directive with a call to the subgrammar's namespaced `start_rule`.
 
 **`path_parser.yaml`**
 ```yaml
@@ -124,49 +127,114 @@ rules:
     sequence:
       - { literal: "COPY" }
       - { rule: _ }
-      - { subgrammar: "path_parser.yaml", ast: {name: "source"} } # Delegate to path_parser.yaml
+      - { subgrammar: { file: "path_parser.yaml" }, ast: { name: "source" } } # Delegate to path_parser.yaml
       - { rule: _ }
-      - { subgrammar: "path_parser.yaml", ast: {name: "dest"} }
+      - { subgrammar: { file: "path_parser.yaml" }, ast: { name: "dest" } }
   _:
     ast: { discard: true }
     regex: "[ \\t]+"
 ```
 When parsing with `main_cli_parser.yaml`, a `COPY` command would expect two parts that can be parsed by `path_parser.yaml`. The `subgrammar` directive makes `path_parser.yaml` a reusable component.
 
-### Testing Modular Grammars
+### Developing with Modular Grammars: `Parser` vs. `PlaceholderParser`
 
-The `includes` and `subgrammar` directives are powerful, but they present a testing challenge: how do you test a "structural" grammar in isolation if it's designed to be merged into a larger one?
+The `subgrammar` directive is powerful, but it presents a challenge: how do you test a grammar file in isolation if its `subgrammar` directives make it dependent on other files?
 
-Koine solves this by allowing the `Parser` to be initialized with multiple, named grammar configurations. You can then select which grammar to use for each call to `parse()` or `validate()`.
+Koine solves this by providing two different parser classes:
 
-**Example: Testing Structural vs. Full Grammars**
-```python
-# In your test setup
-from koine.parser import Parser
+1.  **`Parser`**: The standard parser for production use. It fully resolves all `subgrammar` directives, merging them into a single, complete grammar for final parsing.
+2.  **`PlaceholderParser`**: A parser for testing and development. It *ignores* all `subgrammar` directives, instead using the `placeholder` definition you provide in a `subgrammar` block. This allows you to test a grammar file's local structure without needing to load its dependencies.
 
-# Initialize the parser once with all required grammar configurations.
-parser = Parser({
-    "structural": "path/to/structural_grammar.yaml", # A version with regex stubs
-    "full": "path/to/full_grammar.yaml"             # The version with subgrammars
-})
+To enable this workflow, you provide a `placeholder` definition inside the `subgrammar` object, as described in the section above.
 
-# --- In a test for the structural grammar ---
-def test_structure():
-    source = "..."
-    # Select the 'structural' grammar for this test.
-    result = parser.parse(source, grammar="structural")
-    # ... assert against the simpler AST ...
+**How it Works:**
 
-# --- In a test for the full, merged grammar ---
-def test_full_parsing():
-    source = "..."
-    # Select the 'full' grammar for this test.
-    result = parser.parse(source, grammar="full")
-    # ... assert against the detailed AST from the merged grammar ...
+-   `PlaceholderParser(grammar).parse(text)`: This parser uses the rule defined in the `placeholder` key inside the `subgrammar` object. It does not access the filesystem to load other files.
+-   `Parser(grammar).parse(text)`: This parser uses the `file` key to load, namespace, and merge any subgrammars. This is for parsing with the complete, integrated language.
+
+#### Example: Isolated Testing with Placeholders
+
+Imagine you are developing `main_cli_parser.yaml`, which depends on `path_parser.yaml`. You can add a `regex` placeholder to test `main_cli_parser.yaml` on its own.
+
+**`main_cli_parser.yaml`**
+```yaml
+start_rule: command
+rules:
+  command:
+    ast: { tag: "command" }
+    sequence:
+      - { literal: "COPY" }
+      - { rule: _ }
+      # This rule now includes a placeholder for structural parsing
+      - subgrammar:
+          file: path_parser.yaml
+          placeholder: { regex: "[^\\s]+" }
+        ast: { name: "source" }
+      - { rule: _ }
+      - subgrammar:
+          file: path_parser.yaml
+          placeholder: { regex: "[^\\s]+" }
+        ast: { name: "dest" }
+  _:
+    ast: { discard: true }
+    regex: "[ \\t]+"
 ```
-If `grammar` is not specified in the `parse` call, it defaults to the first one defined in the dictionary.
 
-Koine also performs validation when a `Parser` is created. For instance, it will raise an error if your grammar contains `rules` that can never be reached from the `start_rule`. This helps find typos and dead code in your grammar definitions.
+**Testing Code:**
+```python
+from koine.parser import Parser, PlaceholderParser
+
+# 1. Test the grammar with placeholders
+# We can create a PlaceholderParser from the same file.
+placeholder_parser = PlaceholderParser.from_file("main_cli_parser.yaml")
+placeholder_text = "COPY source_placeholder dest_placeholder"
+placeholder_result = placeholder_parser.parse(placeholder_text)
+# This parse succeeds because it uses `regex: "[^\\s]+"` for the subgrammars.
+
+# 2. Test the full grammar
+# The standard Parser loads all dependencies.
+full_parser = Parser.from_file("main_cli_parser.yaml")
+full_text = "COPY a.b c.d"
+full_result = full_parser.parse(full_text)
+# This parse succeeds because it loads path_parser.yaml and uses it
+# to correctly parse "a.b" and "c.d".
+```
+This workflow allows you to build and test each grammar file independently before combining them. Koine also performs validation when a `Parser` is created. For instance, it will raise an error if your grammar contains `rules` that can never be reached from the `start_rule`. This helps find typos and dead code in your grammar definitions.
+
+#### Circular Dependencies
+
+Koine's `subgrammar` system fully supports circular dependencies. A subgrammar can reference a rule that is defined in its parent grammar. This is useful for building languages where different modules need to call back and forth to each other.
+
+When resolving rule references, Koine first checks for a rule within the subgrammar's own `rules` block. If not found, it then checks the parent grammar's rules. This allows a subgrammar to seamlessly use rules from its parent's scope.
+
+**Example:**
+
+**`parent.yaml`**
+```yaml
+start_rule: a
+rules:
+  a:
+    sequence:
+      - { literal: "a_start" }
+      - subgrammar:
+          file: "child.yaml"
+          placeholder: { regex: "..." }
+  # This rule is only defined in the parent.
+  parent_only_rule:
+    literal: "parent_text"
+```
+
+**`child.yaml`**
+```yaml
+start_rule: b
+rules:
+  b:
+    sequence:
+      - { literal: "b_start" }
+      - { rule: parent_only_rule } # This will correctly resolve to the rule in parent.yaml
+```
+
+When calling `parser.parse()` on `parent.yaml`, the text `a_start b_start parent_text` will parse successfully.
 
 ---
 
@@ -177,7 +245,7 @@ The raw parse tree is messy. The `ast` block is a dictionary you add to a rule t
 | Key         | Description                                                                        |
 | :---------- | :--------------------------------------------------------------------------------- |
 | `discard`   | Completely removes the node from the AST. Essential for whitespace and punctuation.|
-| `promote`   | Replaces the node with its child or children. Its behavior depends on the rule type: on a **`sequence`** or **quantifier** (`zero_or_more`, `one_or_more`, `optional`), it _always_ returns a list of children. This ensures a consistent structure for list-like rules. On a **`choice`**, it promotes the single chosen child node. |
+| `promote`   | Replaces the node with its child or children, then applies the parent's other `ast` directives (like `tag` or `type`) to the result. This allows you to "re-tag" a child node without an extra layer of hierarchy. On a **`sequence`** or **quantifier** (`zero_or_more`, `one_or_more`, `optional`), it _always_ returns a list of children. On a **`choice`**, it promotes the single chosen child node. |
 | `leaf`      | Marks a node as a terminal. Its text is captured, but its children aren't processed.|
 | `tag`       | Renames the node in the AST, decoupling syntax from semantic meaning.              |
 | `type`      | On a `leaf` node, converts its text to a `number`, `bool`, or `null` value.        |
@@ -253,6 +321,54 @@ rules:
   ]
 }
 ```
+
+### Combining `promote` with other directives
+
+The `promote` directive is especially powerful because it applies the parent's `ast` directives *after* promoting the child. This lets you change the `tag`, `type`, or other properties of a node without adding an extra layer of nesting to your grammar.
+
+**Example: Re-tagging and re-typing a promoted node**
+
+Imagine you have a rule that parses any sequence of digits, but in one context you want to treat it as a special `user_id` and ensure it's a number.
+
+**`grammar.yaml`**
+```yaml
+start_rule: get_user
+rules:
+  get_user:
+    ast: { tag: "get_user" }
+    sequence:
+      - { literal: "USER", ast: { discard: true } }
+      - { rule: _ }
+      - { rule: user_id }
+
+  user_id:
+    # Promote the child, but override its tag and ensure its type.
+    ast: { promote: true, tag: "user_id", type: "number" }
+    rule: identifier
+
+  identifier:
+    # This rule produces a generic "identifier" node.
+    ast: { tag: "identifier", leaf: true }
+    regex: "[a-zA-Z0-9_]+"
+
+  _:
+    ast: { discard: true }
+    regex: "\\s+"
+```
+
+**Input Text**: `USER 123`
+**Resulting AST**:
+Without the parent `user_id` rule's `ast` directives, `identifier` would produce a node like `{"tag": "identifier", "text": "123"}`. With the new `promote` logic, the `user_id` rule promotes this node and then applies its own directives to it. The `user_id` node within the final AST will look like this:
+```json
+{
+  "tag": "user_id",
+  "text": "123",
+  "line": 1,
+  "col": 6,
+  "value": 123
+}
+```
+The final node has its tag changed to `user_id` and its value converted to a number. This avoids creating an extra wrapper rule and keeps the grammar clean and intuitive.
 
 **Example: Typed `bool` and `null` values**
 

@@ -1,4 +1,4 @@
-from koine.parser import Parser, Transpiler
+from koine.parser import Parser, PlaceholderParser, Transpiler
 import yaml
 import json
 import pytest
@@ -90,7 +90,7 @@ def test_calc(code, expected_ast, expected_translation):
     assert valid, f"Validation failed for '{code}': {msg}"
 
     # Test parsing
-    parse_result = my_parser.parse(code, rule="expression")
+    parse_result = my_parser.parse(code, start_rule="expression")
     assert parse_result['status'] == 'success'
     assert parse_result['ast'] == expected_ast
     
@@ -112,7 +112,7 @@ def test_calc_errors():
     ]
 
     for code, expected_pos, expected_snippet, expected_error_text in expression_error_cases:
-        result = my_parser.parse(code, rule="expression")
+        result = my_parser.parse(code, start_rule="expression")
         assert result['status'] == 'error', f"Code that should have failed with rule 'expression': '{code}'"
         message = result['message']
         expected_line, expected_col = expected_pos
@@ -767,7 +767,7 @@ class TestKoineGrammarGeneration(unittest.TestCase):
                 'main': {
                     'ast': {
                         'structure': {
-                            'tag': 'main_node',
+                            'tag': 'node',
                             'map_children': {
                                 'child_a': {'from_child': 0},
                                 'child_c': {'from_child': 2}
@@ -791,7 +791,7 @@ class TestKoineGrammarGeneration(unittest.TestCase):
         result = parser.parse("ac")
         self.assertEqual(result['status'], 'success')
         ast = result['ast']
-        self.assertEqual(ast['tag'], 'main_node')
+        self.assertEqual(ast['tag'], 'node')
         self.assertIn('child_a', ast['children'])
         self.assertIn('child_c', ast['children'])
         self.assertEqual(ast['children']['child_a']['tag'], 'A')
@@ -807,94 +807,174 @@ class TestKoineGrammarGeneration(unittest.TestCase):
         # We didn't map 'b', so it shouldn't be in the final children map
         self.assertNotIn('child_b', ast_b['children'])
 
-    def test_grammar_with_includes_and_subgrammars(self):
-        """Tests that grammars can include and delegate to other files."""
-        # --- Create dummy grammar files ---
-        shared_rules_content = """
+
+    def test_subgrammar_with_circular_reference(self):
+        """
+        Tests that a subgrammar can reference a rule defined in its parent,
+        enabling circular dependencies between grammar files.
+        """
+        parent_grammar_content = """
+        start_rule: a
         rules:
-          whitespace:
+          a:
+            ast: { tag: "a" }
+            sequence:
+              - { literal: "a_start", ast: {discard: true} }
+              - { rule: _ }
+              - { subgrammar: { file: "child.yaml", placeholder: { regex: "child_placeholder" } }, ast: { name: "child_part" } }
+              - { rule: _ }
+              - { literal: "a_end", ast: {discard: true} }
+          parent_only_rule:
+            ast: { tag: "from_parent", leaf: true }
+            literal: "parent_rule_text"
+          _:
             ast: { discard: true }
-            regex: "[ ]+"
-          number:
-            ast: { leaf: true, type: "number" }
-            regex: "[0-9]+"
+            regex: "\\\\s+"
         """
-        
-        path_grammar_content = """
-        start_rule: path
+
+        child_grammar_content = """
+        start_rule: b
         rules:
-          path:
-            ast: { tag: "path" }
+          b:
+            ast: { tag: "b" }
             sequence:
-              - { rule: segment }
-              - zero_or_more:
-                  sequence:
-                    - { literal: "." }
-                    - { rule: segment }
-          segment:
-            ast: { leaf: true }
-            regex: "[a-z]+"
+              - { literal: "b_start", ast: {discard: true} }
+              - { rule: _ }
+              # This rule is defined in the parent, not here.
+              - { rule: parent_only_rule, ast: { name: "parent_ref" } }
+              - { rule: _ }
+              - { literal: "b_end", ast: {discard: true} }
+          _:
+            ast: { discard: true }
+            regex: "\\\\s+"
         """
+
+        parent_path = TESTS_DIR / "parent.yaml"
+        child_path = TESTS_DIR / "child.yaml"
         
-        main_grammar_content = """
-        includes:
-          - "shared.yaml" # non-namespaced include
-        start_rule: 'main'
-        rules:
-          main:
-            ast: { promote: true }
-            choice:
-              - { rule: set_path }
-              - { rule: set_number }
-          set_path:
-            ast: { tag: "set_path" }
-            sequence:
-              - { subgrammar: "path.yaml", ast: { name: "target" } } # namespaced subgrammar
-              - { rule: whitespace }
-              - { literal: '=' }
-          set_number:
-            ast: { tag: "set_number" }
-            sequence:
-              - { rule: number } # from shared.yaml
-        """
-        
-        shared_path = TESTS_DIR / "shared.yaml"
-        path_path = TESTS_DIR / "path.yaml"
-        main_path = TESTS_DIR / "main.yaml"
-        
-        shared_path.write_text(shared_rules_content)
-        path_path.write_text(path_grammar_content)
-        main_path.write_text(main_grammar_content)
+        parent_path.write_text(parent_grammar_content)
+        child_path.write_text(child_grammar_content)
 
         try:
-            # --- Test multi-grammar parsing ---
-            parser = Parser({
-                "main": str(main_path),
-                "path_only": str(path_path)
-            })
+            parser = Parser.from_file(str(parent_path))
 
-            # Test parsing with the main grammar that uses includes and subgrammars
-            result_main = parser.parse("foo.bar =", grammar="main")
-            self.assertEqual(result_main['status'], 'success')
-            ast = result_main['ast']
-            self.assertEqual(ast['tag'], 'set_path')
-            self.assertEqual(ast['children']['target']['tag'], 'path')
+            # Test 1: Full parsing with circular reference
+            source_code = "a_start b_start parent_rule_text b_end a_end"
+            result = parser.parse(source_code)
+
+            self.assertEqual(result['status'], 'success', result.get('message'))
             
-            # Test parsing with just the subgrammar
-            result_path = parser.parse("foo.bar", grammar="path_only")
-            self.assertEqual(result_path['status'], 'success')
-            self.assertEqual(result_path['ast']['tag'], 'path')
-
-            # Test rule from included file
-            result_include = parser.parse("123", grammar="main")
-            self.assertEqual(result_include['status'], 'success')
-            self.assertEqual(result_include['ast']['tag'], 'set_number')
+            ast = result['ast']
+            self.assertEqual(ast['tag'], 'a')
+            self.assertIn('child_part', ast['children'])
+            
+            child_ast = ast['children']['child_part']
+            self.assertEqual(child_ast['tag'], 'b')
+            self.assertIn('parent_ref', child_ast['children'])
+            
+            parent_ref_ast = child_ast['children']['parent_ref']
+            self.assertEqual(parent_ref_ast['tag'], 'from_parent')
+            self.assertEqual(parent_ref_ast['text'], 'parent_rule_text')
+            
+            # Test 2: Structural parsing using the regex placeholder
+            structural_source = "a_start child_placeholder a_end"
+            placeholder_parser = PlaceholderParser.from_file(str(parent_path))
+            struct_result = placeholder_parser.parse(structural_source)
+            self.assertEqual(struct_result['status'], 'success', struct_result.get('message'))
+            
+            struct_ast = struct_result['ast']
+            self.assertEqual(struct_ast['tag'], 'a')
+            self.assertIsInstance(struct_ast['children'], dict)
+            self.assertIn('child_part', struct_ast['children'])
+            
+            child_struct_ast = struct_ast['children']['child_part']
+            # The placeholder becomes a simple node. Since the subgrammar was
+            # inline and its placeholder is a regex, the node is tagged 'regex'.
+            self.assertEqual(child_struct_ast['tag'], 'regex')
+            self.assertEqual(child_struct_ast['text'], 'child_placeholder')
 
         finally:
-            # Clean up the dummy files
-            if shared_path.exists(): shared_path.unlink()
-            if path_path.exists(): path_path.unlink()
-            if main_path.exists(): main_path.unlink()
+            if parent_path.exists(): parent_path.unlink()
+            if child_path.exists(): child_path.unlink()
+
+    def test_parse_with_placeholders(self):
+        """
+        Tests that `PlaceholderParser` correctly uses `regex` or `literal`
+        placeholders instead of loading a subgrammar.
+        """
+        parent_grammar_content = """
+        start_rule: main
+        rules:
+          main:
+            ast: { tag: "main" }
+            sequence:
+              - { rule: placeholder_regex, ast: { name: "regex_part" } }
+              - { literal: " ", ast: { discard: true } }
+              - { rule: placeholder_literal, ast: { name: "literal_part" } }
+          
+          placeholder_regex:
+            subgrammar:
+              file: "placeholder_child.yaml"
+              placeholder:
+                regex: "REGEX_PLACEHOLDER"
+
+          placeholder_literal:
+            subgrammar:
+              file: "placeholder_child.yaml"
+              placeholder:
+                literal: "LITERAL_PLACEHOLDER"
+        """
+        child_grammar_content = """
+        start_rule: sub
+        rules:
+          sub:
+            ast: { tag: "sub_node", leaf: true }
+            literal: "actual_sub_content"
+        """
+        
+        parent_path = TESTS_DIR / "placeholder_parent.yaml"
+        child_path = TESTS_DIR / "placeholder_child.yaml"
+        parent_path.write_text(parent_grammar_content)
+        child_path.write_text(child_grammar_content)
+
+        try:
+            # 1. Test with PlaceholderParser
+            placeholder_parser = PlaceholderParser.from_file(str(parent_path))
+            placeholder_source = "REGEX_PLACEHOLDER LITERAL_PLACEHOLDER"
+            result = placeholder_parser.parse(placeholder_source)
+            self.assertEqual(result['status'], 'success', result.get('message'))
+            
+            ast = result['ast']
+            self.assertEqual(ast['tag'], 'main')
+            self.assertIn('regex_part', ast['children'])
+            self.assertIn('literal_part', ast['children'])
+            
+            regex_node = ast['children']['regex_part']
+            # With placeholders, the node gets the tag of the rule that defines the subgrammar.
+            self.assertEqual(regex_node['tag'], 'placeholder_regex')
+            self.assertEqual(regex_node['text'], 'REGEX_PLACEHOLDER')
+            
+            literal_node = ast['children']['literal_part']
+            self.assertEqual(literal_node['tag'], 'placeholder_literal')
+            self.assertEqual(literal_node['text'], 'LITERAL_PLACEHOLDER')
+
+            # 2. Test with regular Parser to ensure it still works
+            full_parser = Parser.from_file(str(parent_path))
+            full_source = "actual_sub_content actual_sub_content"
+            full_result = full_parser.parse(full_source)
+            self.assertEqual(full_result['status'], 'success', full_result.get('message'))
+            
+            full_ast = full_result['ast']
+            self.assertEqual(full_ast['tag'], 'main')
+            self.assertIn('regex_part', full_ast['children'])
+            self.assertIn('literal_part', full_ast['children'])
+            
+            self.assertEqual(full_ast['children']['regex_part']['tag'], 'sub_node')
+            self.assertEqual(full_ast['children']['literal_part']['tag'], 'sub_node')
+            
+        finally:
+            if parent_path.exists(): parent_path.unlink()
+            if child_path.exists(): child_path.unlink()
 
     def test_transpiler_fallback_behavior(self):
         """
@@ -968,5 +1048,477 @@ class TestKoineGrammarGeneration(unittest.TestCase):
         self.assertEqual(result['ast'], expected_ast)
 
 
-if __name__ == '__main__':
+    def test_subgrammar_start_rule_handling(self):
+        """
+        Tests that subgrammars correctly handle missing start_rules,
+        both in normal and circular dependency scenarios.
+        """
+        # --- Case 1: Success when 'rule' is specified for a subgrammar without a start_rule ---
+        sub_no_start_content = """
+        rules:
+          sub_rule: { literal: 'sub' }
+        """
+        parent_with_rule_content = """
+        start_rule: main
+        rules:
+          main: { subgrammar: { file: "sub.yaml", rule: "sub_rule" } }
+        """
+        sub_path = TESTS_DIR / "sub.yaml"
+        parent_path = TESTS_DIR / "parent.yaml"
+        sub_path.write_text(sub_no_start_content)
+        parent_path.write_text(parent_with_rule_content)
+        try:
+            parser = Parser.from_file(str(parent_path))
+            result = parser.parse("sub")
+            self.assertEqual(result['status'], 'success')
+        finally:
+            if sub_path.exists(): sub_path.unlink()
+            if parent_path.exists(): parent_path.unlink()
+
+        # --- Case 2: Failure when no 'rule' is specified and subgrammar has no start_rule ---
+        parent_no_rule_content = """
+        start_rule: main
+        rules:
+          main: { subgrammar: { file: "sub.yaml" } }
+        """
+        sub_path.write_text(sub_no_start_content)
+        parent_path.write_text(parent_no_rule_content)
+        try:
+            with self.assertRaisesRegex(ValueError, "Subgrammar 'sub.yaml' must have a 'start_rule' or a 'rule' must be specified."):
+                Parser.from_file(str(parent_path))
+        finally:
+            if sub_path.exists(): sub_path.unlink()
+            if parent_path.exists(): parent_path.unlink()
+
+        # --- Case 3: Failure in a circular dependency with no start_rule ---
+        circ_content = """
+        start_rule: main
+        rules:
+          main: { subgrammar: { file: 'a.yaml', rule: 'a_rule' } }
+        """
+        # 'a.yaml' has no start_rule, which is key for the circular check failure.
+        a_circ_content = """
+        rules:
+          a_rule: { subgrammar: { file: 'b.yaml' } }
+        """
+        b_circ_content = """
+        start_rule: b_rule
+        rules:
+          b_rule: { subgrammar: { file: 'a.yaml' } }
+        """
+        
+        path = TESTS_DIR / "circ.yaml"
+        a_path = TESTS_DIR / "a.yaml"
+        b_path = TESTS_DIR / "b.yaml"
+        path.write_text(circ_content)
+        a_path.write_text(a_circ_content)
+        b_path.write_text(b_circ_content)
+
+        try:
+            with self.assertRaisesRegex(ValueError, "Subgrammar 'a.yaml' must have a 'start_rule' or a 'rule' must be specified."):
+                Parser.from_file(str(path))
+        finally:
+            if path.exists(): path.unlink()
+            if a_path.exists(): a_path.unlink()
+            if b_path.exists(): b_path.unlink()
+
+
+    def test_subgrammar_sibling_reference(self):
+        """
+        Tests that a subgrammar can reference a rule from a sibling subgrammar
+        that has already been processed.
+        """
+        content = """
+        start_rule: main
+        rules:
+          main:
+            ast: { tag: "main" }
+            sequence:
+              - { subgrammar: { file: 'sub_a.yaml' } }
+              - { subgrammar: { file: 'sub_b.yaml' } }
+        """
+        sub_a_content = """
+        start_rule: rule_a
+        rules:
+          rule_a:
+            ast: { tag: 'node_a', leaf: true }
+            literal: 'a'
+          rule_from_a:
+            ast: { tag: 'from_a', leaf: true }
+            literal: 'from_a'
+        """
+        sub_b_content = """
+        start_rule: rule_b
+        rules:
+          rule_b:
+            ast: { tag: 'node_b' }
+            sequence:
+              - { literal: 'b', ast: { tag: 'literal_b', leaf: true } }
+              # This rule is namespaced and comes from a sibling subgrammar
+              - { rule: SubA_rule_from_a }
+        """
+
+        path = TESTS_DIR / "main.yaml"
+        a_path = TESTS_DIR / "sub_a.yaml"
+        b_path = TESTS_DIR / "sub_b.yaml"
+        path.write_text(content)
+        a_path.write_text(sub_a_content)
+        b_path.write_text(sub_b_content)
+
+        try:
+            parser = Parser.from_file(str(path))
+            result = parser.parse("abfrom_a")
+            self.assertEqual(result['status'], 'success', result.get('message'))
+            
+            ast = result['ast']
+            self.assertEqual(ast['tag'], 'main')
+            self.assertEqual(len(ast['children']), 2)
+            
+            child_a, child_b = ast['children']
+            self.assertEqual(child_a['tag'], 'node_a')
+            self.assertEqual(child_b['tag'], 'node_b')
+            
+            self.assertEqual(len(child_b['children']), 2)
+            self.assertEqual(child_b['children'][0]['tag'], 'literal_b')
+            self.assertEqual(child_b['children'][1]['tag'], 'from_a')
+        finally:
+            if path.exists(): path.unlink()
+            if a_path.exists(): a_path.unlink()
+            if b_path.exists(): b_path.unlink()
+
+    def test_subgrammar_forward_reference(self):
+        """
+        Tests that a subgrammar can reference a rule from a sibling that is
+        defined *after* it in the parent grammar. This requires a two-pass
+        loading strategy.
+        """
+        # sub_b references a rule from sub_a, but sub_b is listed first.
+        content = """
+        start_rule: main
+        rules:
+          main:
+            ast: { tag: "main" }
+            sequence:
+              - { subgrammar: { file: 'sub_b.yaml' }, ast: { name: "b_part" } }
+              - { subgrammar: { file: 'sub_a.yaml' }, ast: { name: "a_part" } }
+        """
+        sub_a_content = """
+        start_rule: rule_a
+        rules:
+          rule_a:
+            ast: { tag: 'node_a', leaf: true }
+            literal: 'a'
+          rule_from_a:
+            ast: { tag: 'from_a', leaf: true }
+            literal: 'from_a'
+        """
+        sub_b_content = """
+        start_rule: rule_b
+        rules:
+          rule_b:
+            ast: { tag: 'node_b' }
+            sequence:
+              - { literal: 'b', ast: { leaf: true, discard: true } }
+              # This is a forward reference to a rule in a sibling grammar.
+              - { rule: SubA_rule_from_a }
+        """
+        path = TESTS_DIR / "main.yaml"
+        a_path = TESTS_DIR / "sub_a.yaml"
+        b_path = TESTS_DIR / "sub_b.yaml"
+        path.write_text(content)
+        a_path.write_text(sub_a_content)
+        b_path.write_text(sub_b_content)
+
+        try:
+            parser = Parser.from_file(str(path))
+            result = parser.parse("bfrom_aa")
+            self.assertEqual(result['status'], 'success', result.get('message'))
+            
+            ast = result['ast']
+            self.assertEqual(ast['tag'], 'main')
+            
+            b_part = ast['children']['b_part']
+            self.assertEqual(b_part['tag'], 'node_b')
+            self.assertEqual(b_part['children'][0]['tag'], 'from_a')
+
+        finally:
+            if path.exists(): path.unlink()
+            if a_path.exists(): a_path.unlink()
+            if b_path.exists(): b_path.unlink()
+
+    def test_promote_with_structure_raises_error(self):
+        """
+        Tests that using 'promote' and 'structure' in the same AST block
+        raises a ValueError.
+        """
+        grammar = {
+            'start_rule': 'test',
+            'rules': {
+                'test': {
+                    'ast': {'promote': True, 'structure': 'left_associative_op'},
+                    'literal': 'a'
+                }
+            }
+        }
+        with self.assertRaisesRegex(ValueError, "'promote' and 'structure' directives are mutually exclusive"):
+            Parser(grammar)
+
+    def test_promote_with_discard_raises_error(self):
+        """
+        Tests that using 'promote' and 'discard' in the same AST block
+        raises a ValueError.
+        """
+        grammar = {
+            'start_rule': 'test',
+            'rules': {
+                'test': {
+                    'ast': {'promote': True, 'discard': True},
+                    'literal': 'a'
+                }
+            }
+        }
+        with self.assertRaisesRegex(ValueError, "'promote: true' is redundant when 'discard: true' is also present"):
+            Parser(grammar)
+
+    def test_leaf_with_subgrammar_raises_error(self):
+        """
+        Tests that a rule with `ast: {leaf: true}` directly containing a `subgrammar`
+        directive raises a ValueError.
+        """
+        grammar_content = """
+        start_rule: test
+        rules:
+          test:
+            ast: {leaf: true}
+            subgrammar: {file: 'sub.yaml'}
+        """
+        sub_grammar_content = "start_rule: sub\nrules:\n  sub: {literal: 'sub'}"
+        path = TESTS_DIR / "main.yaml"
+        sub_path = TESTS_DIR / "sub.yaml"
+        path.write_text(grammar_content)
+        sub_path.write_text(sub_grammar_content)
+
+        try:
+            with self.assertRaisesRegex(ValueError, "Rule 'test' is defined as a 'leaf' node but contains a 'subgrammar' directive. These are mutually exclusive."):
+                Parser.from_file(str(path))
+        finally:
+            if path.exists(): path.unlink()
+            if sub_path.exists(): sub_path.unlink()
+
+    def test_leaf_with_nested_subgrammar_raises_error(self):
+        """
+        Tests that a leaf rule containing a subgrammar nested inside another
+        construct (like a sequence) also raises an error.
+        """
+        grammar_content = """
+        start_rule: test
+        rules:
+          test:
+            ast: {leaf: true}
+            sequence:
+              - { subgrammar: {file: 'sub.yaml'} }
+        """
+        sub_grammar_content = "start_rule: sub\nrules:\n  sub: {literal: 'sub'}"
+        path = TESTS_DIR / "main.yaml"
+        sub_path = TESTS_DIR / "sub.yaml"
+        path.write_text(grammar_content)
+        sub_path.write_text(sub_grammar_content)
+
+        try:
+            with self.assertRaisesRegex(ValueError, "Rule 'test' is defined as a 'leaf' node but contains a 'subgrammar' directive. These are mutually exclusive."):
+                Parser.from_file(str(path))
+        finally:
+            if path.exists(): path.unlink()
+            if sub_path.exists(): sub_path.unlink()
+
+    def test_subgrammar_unqualified_reference_to_sibling_fails_gracefully(self):
+        """
+        Tests that an unqualified reference to a rule in a sibling subgrammar
+        fails during parsimonious compilation, not due to a premature
+        validation check in Koine. This is the correct behavior.
+        """
+        content = """
+        start_rule: main
+        rules:
+          main:
+            sequence:
+              - { subgrammar: { file: 'sub_a.yaml' } }
+              - { subgrammar: { file: 'sub_b.yaml' } }
+        """
+        sub_a_content = """
+        start_rule: rule_a
+        rules:
+          rule_a: { literal: 'a' }
+          rule_from_a: { literal: 'from_a' }
+        """
+        sub_b_content = """
+        start_rule: rule_b
+        rules:
+          rule_b:
+            # Unqualified reference to a rule in a sibling grammar.
+            # This is not supported and should fail during compilation.
+            rule: rule_from_a
+        """
+
+        path = TESTS_DIR / "main.yaml"
+        a_path = TESTS_DIR / "sub_a.yaml"
+        b_path = TESTS_DIR / "sub_b.yaml"
+        path.write_text(content)
+        a_path.write_text(sub_a_content)
+        b_path.write_text(sub_b_content)
+
+        try:
+            # This should fail when parsimonious tries to build the grammar
+            # because 'rule_from_a' will not be defined in the final grammar string
+            # for the SubB part.
+            with self.assertRaisesRegex(ValueError, "is not defined in grammar"):
+                Parser.from_file(str(path))
+        finally:
+            if path.exists(): path.unlink()
+            if a_path.exists(): a_path.unlink()
+            if b_path.exists(): b_path.unlink()
+
+    def test_unreachable_rule_in_subgrammar_raises_error(self):
+        """
+        Tests that the linter correctly identifies an unreachable rule within a
+        subgrammar when the parent grammar is compiled.
+        """
+        parent_content = """
+        start_rule: main
+        rules:
+          main:
+            subgrammar: { file: 'child.yaml' }
+        """
+        child_content = """
+        start_rule: child_start
+        rules:
+          child_start: { literal: 'a' }
+          # This rule is not referenced by anything, so it should be flagged.
+          unreachable: { literal: 'b' }
+        """
+        parent_path = TESTS_DIR / "parent.yaml"
+        child_path = TESTS_DIR / "child.yaml"
+        parent_path.write_text(parent_content)
+        child_path.write_text(child_content)
+
+        try:
+            # The linter runs on the combined grammar and should find the unreferenced rule.
+            # The subgrammar file 'child.yaml' becomes the namespace 'Child'.
+            with self.assertRaisesRegex(ValueError, "Unreachable rules detected: Child_unreachable"):
+                Parser.from_file(str(parent_path))
+        finally:
+            if parent_path.exists(): parent_path.unlink()
+            if child_path.exists(): child_path.unlink()
+
+    def test_subgrammar_rule_is_reachable_if_referenced_externally(self):
+        """
+        Tests that a rule in a subgrammar is NOT flagged as unreachable if it
+        is referenced by the parent grammar.
+        """
+        parent_content = """
+        start_rule: main
+        rules:
+          main:
+            sequence:
+              - { subgrammar: { file: 'child.yaml' } }
+              # Externally reference the otherwise unreachable rule
+              - { rule: Child_reachable_by_parent }
+        """
+        child_content = """
+        start_rule: child_start
+        rules:
+          child_start: { literal: 'a' }
+          # This rule is now referenced by the parent.
+          reachable_by_parent: { literal: 'b' }
+        """
+        parent_path = TESTS_DIR / "parent.yaml"
+        child_path = TESTS_DIR / "child.yaml"
+        parent_path.write_text(parent_content)
+        child_path.write_text(child_content)
+
+        try:
+            # Should not raise an unreachable rule error
+            parser = Parser.from_file(str(parent_path))
+            result = parser.parse("ab")
+            self.assertEqual(result['status'], 'success')
+        except ValueError as e:
+            self.fail(f"Parser initialization failed unexpectedly: {e}")
+        finally:
+            if parent_path.exists(): parent_path.unlink()
+            if child_path.exists(): child_path.unlink()
+
+    def test_subgrammar_A_B_A_circular_reference(self):
+        """
+        Tests a circular dependency where grammar A includes B, and B refers
+        back to a rule in A. This ensures that namespacing is handled correctly
+        in nested, circular scenarios.
+        """
+        content = """
+        start_rule: main
+        rules:
+          main:
+            subgrammar: { file: 'a.yaml' }
+        """
+        a_content = """
+        start_rule: rule_a
+        rules:
+          rule_a:
+            ast: { tag: 'node_a' }
+            sequence:
+              - { literal: 'a_start', ast: { discard: true } }
+              - { rule: _ }
+              - { subgrammar: { file: 'b.yaml' }, ast: { name: 'b_part' } }
+              - { rule: _ }
+              - { literal: 'a_end', ast: { discard: true } }
+          rule_from_a:
+            ast: { tag: 'from_a', leaf: true }
+            literal: 'text_from_a'
+          _:
+            ast: { discard: true }
+            regex: "\\\\s+"
+        """
+        b_content = """
+        start_rule: rule_b
+        rules:
+          rule_b:
+            ast: { tag: 'node_b' }
+            sequence:
+              - { literal: 'b_start', ast: { discard: true } }
+              - { rule: _ }
+              # This is a reference back to a rule in the parent subgrammar 'a'
+              - { rule: A_rule_from_a, ast: { name: 'a_ref' } }
+              - { rule: _ }
+              - { literal: 'b_end', ast: { discard: true } }
+          _:
+            ast: { discard: true }
+            regex: "\\\\s+"
+        """
+        path = TESTS_DIR / "main.yaml"
+        a_path = TESTS_DIR / "a.yaml"
+        b_path = TESTS_DIR / "b.yaml"
+        path.write_text(content)
+        a_path.write_text(a_content)
+        b_path.write_text(b_content)
+
+        try:
+            parser = Parser.from_file(str(path))
+            source = "a_start b_start text_from_a b_end a_end"
+            result = parser.parse(source)
+            self.assertEqual(result['status'], 'success', result.get('message'))
+
+            ast = result['ast']
+            self.assertEqual(ast['tag'], 'node_a')
+            b_part = ast['children']['b_part']
+            self.assertEqual(b_part['tag'], 'node_b')
+            a_ref = b_part['children']['a_ref']
+            self.assertEqual(a_ref['tag'], 'from_a')
+            self.assertEqual(a_ref['text'], 'text_from_a')
+
+        finally:
+            if path.exists(): path.unlink()
+            if a_path.exists(): a_path.unlink()
+            if b_path.exists(): b_path.unlink()
+
+
+if __name__ == '___':
     unittest.main()

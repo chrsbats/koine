@@ -321,3 +321,78 @@ def test_promoted_optional_with_no_child_returns_empty_list():
 
     cleaned_result_ast = clean_ast(result_ast)
     assert cleaned_result_ast == expected_ast
+
+
+def test_promote_applies_parent_ast_directives():
+    """
+    Tests that a parent rule with `promote: true` and other `ast` directives
+    (like `tag` or `type`) correctly applies them to the promoted child node.
+    """
+    grammar = """
+    start_rule: retagged_and_typed_node
+    rules:
+      retagged_and_typed_node:
+        ast: { promote: true, tag: "parent_tag", type: "number" }
+        rule: child_node
+
+      child_node:
+        ast: { tag: "child_tag", leaf: true }
+        regex: "\\\\d+"
+    """
+    grammar_def = yaml.safe_load(grammar)
+    parser = Parser(grammar_def)
+
+    source_code = "123"
+    expected_ast = {
+        'tag': 'parent_tag',
+        'value': 123
+    }
+
+    try:
+        result = parser.parse(source_code)
+    except Exception as e:
+        pytest.fail(f"Parsing failed unexpectedly:\n{e}", pytrace=False)
+
+    assert result['status'] == 'success'
+    cleaned_ast = clean_ast(result)
+    assert cleaned_ast == expected_ast
+
+
+def test_promote_with_tag_on_list_wraps_node():
+    """
+    Tests that if a rule has `promote: true` and a `tag`, and it promotes a
+    child that returns a list, the final result is a new node with that tag
+    wrapping the list of children.
+    """
+    grammar = """
+    start_rule: list_wrapper
+    rules:
+      list_wrapper:
+        ast: { promote: true, tag: "wrapper" }
+        rule: items
+
+      items:
+        ast: { promote: true }
+        one_or_more:
+          rule: item
+      
+      item:
+        ast: { tag: "item", leaf: true }
+        regex: "[a-z]"
+    """
+    grammar_def = yaml.safe_load(grammar)
+    parser = Parser(grammar_def)
+    source_code = "abc"
+    result = parser.parse(source_code)
+    assert result['status'] == 'success'
+
+    cleaned_ast = clean_ast(result)
+    expected_ast = {
+        'tag': 'wrapper',
+        'children': [
+            {'tag': 'item', 'text': 'a'},
+            {'tag': 'item', 'text': 'b'},
+            {'tag': 'item', 'text': 'c'},
+        ]
+    }
+    assert cleaned_ast == expected_ast

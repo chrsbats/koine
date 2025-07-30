@@ -1,5 +1,29 @@
 # Transpiling with Koine: From AST to Text
 
+```python
+import yaml
+from koine.parser import Parser, Transpiler
+
+# Assume 'ast' is a pre-existing Abstract Syntax Tree from a parser.
+# For example, after running:
+#
+# with open("parser_calc.yaml", "r") as f:
+#     parser_grammar = yaml.safe_load(f)
+# parser = Parser(parser_grammar)
+# ast = parser.parse("2 + 3")['ast']
+
+# 1. Load the transpiler grammar
+with open("transpiler_calc.yaml", "r") as f:
+    transpiler_grammar = yaml.safe_load(f)
+
+# 2. Instantiate the transpiler
+transpiler = Transpiler(transpiler_grammar)
+
+# 3. Transpile the AST
+# output_string = transpiler.transpile(ast)
+# output_string is now "(add 2 3)"
+```
+
 This document is a comprehensive guide to Koine's transpiling capabilities. It explains how to take a structured Abstract Syntax Tree (AST), as produced by a Koine parser, and transform it into a new string format.
 
 This guide focuses _exclusively_ on the transpiling pipeline: **AST -> Text**. The process of generating an AST from source code is covered in `PARSING.md`. We will assume you already have a valid AST.

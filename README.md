@@ -12,12 +12,13 @@ This approach separates the _what_ (your language definition) from the _how_ (th
 
 - **Declarative:** Define complex grammars entirely in a data format like YAML. No code generation step is required.
 - **Pipeline-based:** Use Koine for simple validation, structured AST generation, or full transpilation.
+- **Composable Grammars:** Break large languages into modular, independently testable files using `subgrammar` directives. Placeholders allow you to develop each part in isolation before linking them into a complete system.
 - **Powerful:** Handles operator precedence, left/right associativity, lookaheads, and features an integrated stateful lexer for indentation-based syntax.
 - **Language Agnostic:** The Koine format is a specification. The engine can be implemented in any language (current implementation is Python).
 
 ## Why Koine?
 
-Koine is designed for people building DSLs, not compilers. If you've struggled with Lark's lookahead limitations or ANTLR's codegen overhead, Koine offers a different model: fully declarative grammar, AST, and transpilation—defined entirely as JSON/YAML.
+Koine is designed for people building DSLs, not compilers. If you've struggled with Lark's lookahead limitations or ANTLR's codegen overhead, Koine offers a different model: fully declarative grammar, AST, and transpilation—defined entirely as JSON/YAML. Its modular grammar system allows you to build and test complex languages piece by piece, making it ideal for large, collaborative projects.
 
 It was built for environments where you want to **write, modify, or interpret grammars at runtime**—such as agent scripting, game modding, or interactive systems that evolve on the fly.
 
@@ -125,6 +126,8 @@ Let's build a simple calculator that can parse `2 + 3` and transpile it to `(add
     ```
 
 3.  **Use the Koine engine in `main.py`:**
+
+    The `parser.parse()` method takes the source text to parse. For testing individual rules, you can also pass an optional `start_rule="<rule_name>"` argument to override the default entry point.
 
     ```python
     import yaml

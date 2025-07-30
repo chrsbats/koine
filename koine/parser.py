@@ -8,8 +8,8 @@ from pathlib import Path
 import yaml
 from parsimonious.grammar import Grammar
 from parsimonious.nodes import NodeVisitor
-from parsimonious.expressions import Literal, Quantifier, Lookahead
-from parsimonious.exceptions import ParseError, IncompleteParseError, LeftRecursionError, VisitationError
+from parsimonious.expressions import Literal, Quantifier, Lookahead, Regex
+from parsimonious.exceptions import ParseError, IncompleteParseError, LeftRecursionError, VisitationError, BadGrammar, UndefinedLabel
 
 # ==============================================================================
 # 0. LEXER
@@ -119,6 +119,13 @@ def transpile_rule(rule_definition, is_token_grammar=False, rule_name=None):
         'zero_or_more', 'one_or_more', 'optional', 'token',
         'positive_lookahead', 'negative_lookahead'
     }
+    # This is a Koine-specific key that should be resolved before transpilation.
+    # If it's still present, it means we're in a structural-only build where
+    # it acts as a placeholder that should have been replaced. We treat it as
+    # a rule that can match an empty string, which is a safe default.
+    if 'subgrammar' in rule_definition:
+        return '("")?'
+
     found_keys = [key for key in rule_definition if key in rule_keys]
 
     if len(found_keys) != 1:
@@ -274,11 +281,12 @@ class AstBuilderVisitor(NodeVisitor):
             return None
 
         if rule_name not in self.grammar_rules:
-            if isinstance(node.expr, Lookahead) or not visited_children: return None
+            if isinstance(node.expr, Lookahead) or (not node.text and not visited_children): return None
             if isinstance(node.expr, Quantifier) and node.expr.max == 1: return visited_children[0]
-            if isinstance(node.expr, Literal) and not self.tokens:
+            if (isinstance(node.expr, Literal) or isinstance(node.expr, Regex)) and not self.tokens:
+                tag = "literal" if isinstance(node.expr, Literal) else "regex"
                 line, col = self.finder.find(node.start)
-                return {"tag": "literal", "text": node.text, "line": line, "col": col} if node.text else None
+                return {"tag": tag, "text": node.text, "line": line, "col": col} if node.text else None
             return [c for c in visited_children if c is not None]
 
         rule_def = self.grammar_rules.get(rule_name, {})
@@ -299,12 +307,9 @@ class AstBuilderVisitor(NodeVisitor):
 
         if ast_config.get('promote'):
             if isinstance(children, list):
-                # The children list can contain arbitrarily nested lists from promoted
-                # quantifiers, choices, or sequences. We need to deeply flatten it
-                # into a single list of AST nodes.
-                # Iteratively and deeply flatten the list. This handles cases
-                # like a promoted quantifier over a promoted rule, which can
-                # create nested lists of children.
+                # Deeply flatten the list of children. This handles cases like a
+                # promoted quantifier over a promoted rule, which can create
+                # nested lists of children.
                 flat_list = []
                 stack = list(reversed(children))
                 while stack:
@@ -315,29 +320,71 @@ class AstBuilderVisitor(NodeVisitor):
                         flat_list.append(item)
                 children = flat_list
 
-            # Special case for `( expression )` style rules.
+            # Determine what to promote. Could be a single node, a list, or None.
+            promoted_node = None
             if len(children) == 3 and \
                isinstance(children[0], dict) and children[0].get('tag') == 'literal' and \
                isinstance(children[2], dict) and children[2].get('tag') == 'literal':
-                return children[1]
+                # This is a special case for `( expression )` style rules.
+                promoted_node = children[1]
+            else:
+                is_sequence = 'sequence' in rule_def
+                is_quantifier = 'one_or_more' in rule_def or 'zero_or_more' in rule_def or 'optional' in rule_def
 
-            is_sequence = 'sequence' in rule_def
-            is_quantifier = 'one_or_more' in rule_def or 'zero_or_more' in rule_def or 'optional' in rule_def
+                if is_sequence or is_quantifier:
+                    # Promoted sequences and quantifiers always result in a list of children.
+                    promoted_node = children
+                elif not children:
+                    promoted_node = None
+                elif len(children) == 1:
+                    # A choice or rule reference that results in one child.
+                    promoted_node = children[0]
+                else:
+                    # A sequence that resulted in multiple children.
+                    promoted_node = children
 
-            if is_sequence or is_quantifier:
-                # For promoted sequences and quantifiers, always return a list of children
-                # for a consistent data structure.
-                return children
-
-            # For other promoted rules (e.g., choice, or a direct rule promotion) that
-            # don't match, they produce no node.
-            if not children:
+            if promoted_node is None:
                 return None
 
-            # if there's only one child, return it directly without a list wrapper.
-            if len(children) > 1:
-                return children
-            return children[0]
+            # Apply parent directives to the promoted result.
+            if isinstance(promoted_node, dict):
+                if 'tag' in ast_config:
+                    promoted_node['tag'] = ast_config['tag']
+
+                if ast_config.get('leaf') is True:
+                    if 'children' in promoted_node:
+                        del promoted_node['children']
+                
+                if 'type' in ast_config:
+                    new_type = ast_config['type']
+                    text = promoted_node['text']
+                    if new_type == 'number':
+                        try:
+                            val = float(text)
+                            promoted_node['value'] = int(val) if val.is_integer() else val
+                        except (ValueError, TypeError):
+                            promoted_node['value'] = text # Fallback
+                    elif new_type == 'bool':
+                        promoted_node['value'] = text.lower() == 'true'
+                    elif new_type == 'null':
+                        promoted_node['value'] = None
+                
+                return promoted_node
+            
+            if isinstance(promoted_node, list):
+                # If the parent has a tag, wrap the promoted list in a new node.
+                # Other directives like `type` or `leaf` are not applicable to lists.
+                if 'tag' in ast_config:
+                    line, col = self.get_pos(node, children)
+                    return {
+                        "tag": ast_config['tag'],
+                        "text": node.text,
+                        "line": line,
+                        "col": col,
+                        "children": promoted_node
+                    }
+
+            return promoted_node
 
         structure_config = ast_config.get('structure')
         if isinstance(structure_config, str):
@@ -601,136 +648,22 @@ class Transpiler:
 # 5. MAIN PARSER CLASS
 # ==============================================================================
 
-class Parser:
-    """The main entry point that orchestrates the parsing process."""
-    @classmethod
-    def from_file(cls, filepath: str):
-        """Loads a grammar from a main YAML file."""
-        return cls({'default': filepath})
+# ==============================================================================
+# 5. PARSER CORE & IMPLEMENTATIONS
+# ==============================================================================
 
-    def __init__(self, grammars: dict):
-        # Heuristic to detect old-style call: Parser(single_grammar_dict)
-        # A grammar dict has 'rules' or 'start_rule'. A dict of grammars does not.
-        if isinstance(grammars, dict) and ('rules' in grammars or 'start_rule' in grammars):
-            grammars = {'default': grammars}
-
-        if not isinstance(grammars, dict):
-            raise ValueError("Parser must be initialized with a dictionary.")
-
-        self.grammars = {}
-        self.default_grammar_name = None
-
-        if not grammars:
-            return
-
-        # Check if we are in file mode or dict mode
-        first_key = next(iter(grammars.keys()))
-        first_val = grammars[first_key]
-
-        if isinstance(first_val, str): # File mode
-            for name, filepath in grammars.items():
-                self.grammars[name] = self._compile_grammar_from_file(filepath)
-            self.default_grammar_name = first_key
-        elif isinstance(first_val, dict): # Dict mode (or backward-compat single dict)
-             for name, grammar_dict in grammars.items():
-                # For dicts, we need a base path for relative includes/subgrammars. CWD is a reasonable default.
-                resolved_grammar = self._load_and_resolve(grammar_dict, Path.cwd())
-                self.grammars[name] = self._compile_grammar_from_dict(resolved_grammar)
-             self.default_grammar_name = first_key
-        else:
-            raise ValueError("`grammars` must be a dictionary of file paths or a dictionary of grammar definitions.")
-
-    def _compile_grammar_from_file(self, filepath: str):
-        grammar_dict = self._load_and_resolve_from_path(Path(filepath))
-        return self._compile_grammar_from_dict(grammar_dict)
-    
-    def _load_and_resolve_from_path(self, file_path_obj: Path):
-        with open(file_path_obj, 'r') as f:
-            grammar = yaml.safe_load(f) or {}
-        return self._load_and_resolve(grammar, file_path_obj.parent)
-
-    def _load_and_resolve(self, grammar_dict: dict, base_path: Path):
-        # Deep copy to avoid modifying original dicts passed by reference
-        grammar = json.loads(json.dumps(grammar_dict))
-
-        # Handle includes first (non-namespaced merge)
-        if 'includes' in grammar:
-            final_rules = {}
-            for include_file in grammar.pop('includes'):
-                include_path = base_path / include_file
-                included_grammar = self._load_and_resolve_from_path(include_path)
-                final_rules.update(included_grammar.get('rules', {}))
-            
-            final_rules.update(grammar.get('rules', {}))
-            grammar['rules'] = final_rules
-
-        # Now handle subgrammars (namespaced merge)
-        rules = grammar.get('rules', {})
-        if not rules: return grammar
-
-        def walker(node):
-            if isinstance(node, list):
-                for i, item in enumerate(node):
-                    if isinstance(item, dict) and 'subgrammar' in item:
-                        self._process_subgrammar_node(item, node, i, rules, base_path)
-                    else:
-                        walker(item)
-            elif isinstance(node, dict):
-                for key, value in list(node.items()):
-                    if isinstance(value, dict) and 'subgrammar' in value:
-                        self._process_subgrammar_node(value, node, key, rules, base_path)
-                    else:
-                        walker(value)
-        walker(rules)
-        return grammar
-
-    def _process_subgrammar_node(self, subgrammar_item, parent_node, key_or_index, all_rules, base_path):
-        subgrammar_path_str = subgrammar_item['subgrammar']
-        subgrammar_path = base_path / subgrammar_path_str
-        
-        child_grammar_dict = self._load_and_resolve_from_path(subgrammar_path)
-        child_rules = child_grammar_dict.get('rules', {})
-        child_start_rule = child_grammar_dict.get('start_rule')
-
-        if not child_start_rule:
-            raise ValueError(f"Subgrammar '{subgrammar_path_str}' must have a 'start_rule'.")
-            
-        namespace = subgrammar_path.stem.replace('-', '_')
-        child_rule_names = set(child_rules.keys())
-
-        def rewrite_rule_refs_in_subgrammar(node):
-            if isinstance(node, list):
-                for item in node:
-                    rewrite_rule_refs_in_subgrammar(item)
-            elif isinstance(node, dict):
-                if 'rule' in node and node['rule'] in child_rule_names:
-                    node['rule'] = f"{namespace}__{node['rule']}"
-                for value in node.values():
-                    rewrite_rule_refs_in_subgrammar(value)
-        
-        for name, rule_def in child_rules.items():
-            namespaced_name = f"{namespace}__{name}"
-            # Deep copy to avoid modifying a cached grammar dict
-            new_rule_def = json.loads(json.dumps(rule_def))
-            rewrite_rule_refs_in_subgrammar(new_rule_def)
-            all_rules[namespaced_name] = new_rule_def
-        
-        # Replace the 'subgrammar' item with a 'rule' reference
-        new_rule_ref = {'rule': f"{namespace}__{child_start_rule}"}
-        original_item = subgrammar_item.copy()
-        del original_item['subgrammar']
-        new_rule_ref.update(original_item)
-        
-        if isinstance(parent_node, list):
-            parent_node[key_or_index] = new_rule_ref
-        elif isinstance(parent_node, dict):
-            parent_node[key_or_index] = new_rule_ref
-
-    def _compile_grammar_from_dict(self, grammar_dict):
+class _ParserCore:
+    """
+    A base class containing common logic for parsing, grammar compilation,
+    and linting. Not intended for direct use.
+    """
+    def _compile_grammar_from_dict(self, grammar_dict, lint=True):
         config = {}
         config['grammar_dict'] = self._normalize_grammar(grammar_dict)
+        external_refs = config['grammar_dict'].pop('_external_refs', [])
         config['is_token_grammar'] = 'lexer' in config['grammar_dict']
-        self._lint_grammar(config['grammar_dict'])
+        if lint:
+            self._lint_grammar(config['grammar_dict'], external_refs=external_refs)
         
         if config['is_token_grammar']:
             config['lexer'] = StatefulLexer(config['grammar_dict']['lexer'])
@@ -738,25 +671,86 @@ class Parser:
         config['grammar_string'] = transpile_grammar(config['grammar_dict'])
         try:
             config['grammar'] = Grammar(config['grammar_string'])
-        except (LeftRecursionError, VisitationError) as e:
-            raise ValueError(f"Left-recursion detected in grammar. Parsimonious error: {e}")
+        except LeftRecursionError as e:
+            raise ValueError(f"Left-recursion detected in grammar. Parsimonious error: {e}") from e
+        except UndefinedLabel as e:
+            label_match = re.search(r'The label "([^"]+)"', str(e))
+            missing_rule = label_match.group(1) if label_match else "unknown"
+            raise ValueError(f"Rule '{missing_rule}' is not defined in grammar.") from e
+        except VisitationError as e:
+            # Check for circular reference, which parsimonious reports as BadGrammar
+            if isinstance(e.__cause__, BadGrammar) and "Circular Reference" in str(e.__cause__):
+                raise ValueError(f"Left-recursion detected in grammar. Parsimonious error: {e}") from e
+            
+            if isinstance(e.__cause__, KeyError):
+                missing_rule = e.__cause__.args[0]
+                raise ValueError(f"Rule '{missing_rule}' is not defined in grammar.") from e
+            
+            raise ValueError(f"Error during grammar compilation. Parsimonious error: {e}") from e
         config['start_rule'] = config['grammar_dict'].get('start_rule', 'start')
         
         return config
 
-    def _lint_grammar(self, grammar_dict):
+    def _lint_grammar(self, grammar_dict, external_refs=None):
         """
         Performs static analysis on the grammar to find common issues like
         unreachable rules.
         """
-        self._check_for_unreachable_rules(grammar_dict)
+        self._check_for_unreachable_rules(grammar_dict, external_refs=external_refs or [])
         self._check_for_always_empty_rules(grammar_dict)
 
-    def _check_for_unreachable_rules(self, grammar_dict):
+
+        for rule_name, rule_def in grammar_dict.get('rules', {}).items():
+            ast_config = rule_def.get('ast', {})
+            if not isinstance(ast_config, dict): continue
+
+            has_promote = ast_config.get('promote', False)
+            has_structure = 'structure' in ast_config
+            has_discard = ast_config.get('discard', False)
+
+            if has_promote and has_structure:
+                raise ValueError(f"In rule '{rule_name}': 'promote' and 'structure' directives are mutually exclusive.")
+            
+            if has_promote and has_discard:
+                raise ValueError(f"In rule '{rule_name}': 'promote: true' is redundant when 'discard: true' is also present.")
+
+    def _lint_leaf_subgrammar_conflict(self, grammar_dict):
+        """
+        Checks for the mutually exclusive combination of `leaf: true` and
+        the `subgrammar` directive within a rule. This check must be run
+        before subgrammars are resolved and replaced.
+        """
+        for rule_name, rule_def in grammar_dict.get('rules', {}).items():
+            ast_config = rule_def.get('ast', {})
+            if not isinstance(ast_config, dict): continue
+
+            is_leaf = ast_config.get('leaf', False)
+            if is_leaf:
+                # Helper to find subgrammar directives recursively
+                def has_subgrammar_directive(node):
+                    if isinstance(node, dict):
+                        if 'subgrammar' in node:
+                            return True
+                        for key, value in node.items():
+                            if key != 'ast' and has_subgrammar_directive(value):
+                                return True
+                    elif isinstance(node, list):
+                        for item in node:
+                            if has_subgrammar_directive(item):
+                                return True
+                    return False
+                
+                if has_subgrammar_directive(rule_def):
+                    raise ValueError(f"Rule '{rule_name}' is defined as a 'leaf' node but contains a 'subgrammar' directive. These are mutually exclusive.")
+
+    def _check_for_unreachable_rules(self, grammar_dict, external_refs=None):
         """
         Checks for rules that are defined in the grammar but can never be
         reached from the start_rule.
         """
+        if external_refs is None:
+            external_refs = []
+
         all_rules = set(grammar_dict['rules'].keys())
         start_rule = grammar_dict.get('start_rule', 'start')
         if start_rule not in all_rules:
@@ -778,7 +772,7 @@ class Parser:
             return refs
 
         reachable = set()
-        queue = [start_rule]
+        queue = [start_rule] + external_refs
         
         while queue:
             current_rule = queue.pop(0)
@@ -789,9 +783,9 @@ class Parser:
             
             if current_rule not in grammar_dict['rules']:
                 # This indicates a reference to a non-existent rule.
-                # Parsimonious will catch this with a better error message,
-                # so we can ignore it here.
-                continue
+                # Parsimonious will catch this with a better error message, so we
+                # can abort the unreachability check and let that error surface.
+                return
 
             rule_definition = grammar_dict['rules'][current_rule]
             references = find_references(rule_definition)
@@ -801,6 +795,9 @@ class Parser:
                     queue.append(ref)
         
         unreachable = all_rules - reachable
+        # Filter out internal, normalized rules from the final report
+        unreachable = {rule for rule in unreachable if "__" not in rule}
+
         if unreachable:
             raise ValueError(f"Unreachable rules detected: {', '.join(sorted(list(unreachable)))}")
 
@@ -891,7 +888,6 @@ class Parser:
         # Deep copy to avoid modifying the user's original dict
         new_grammar = json.loads(json.dumps(grammar_dict))
         rules = new_grammar.get('rules', {})
-        anon_counter = 0
 
         def is_inline_def_with_ast(d):
             if not isinstance(d, dict) or 'ast' not in d:
@@ -914,43 +910,49 @@ class Parser:
             # It must contain one of the core grammar keys.
             return any(key in d for key in rule_keys)
 
-        def walker(node):
-            nonlocal anon_counter
+        def walker(node, base_name, counter):
             if isinstance(node, list):
                 for i, item in enumerate(node):
                     if is_inline_def_with_ast(item):
-                        anon_counter += 1
-                        new_rule_name = f"__koine_anon_{anon_counter}"
+                        counter[0] += 1
+                        new_rule_name = f"{base_name}__{counter[0]}"
                         rules[new_rule_name] = item
                         node[i] = {'rule': new_rule_name}
                     else:
-                        walker(item)
+                        walker(item, base_name, counter)
             elif isinstance(node, dict):
                 for key, value in list(node.items()):
                     if key in ['ast', 'transpile']:
                         continue
                     
                     if is_inline_def_with_ast(value):
-                        anon_counter += 1
-                        new_rule_name = f"__koine_anon_{anon_counter}"
+                        counter[0] += 1
+                        new_rule_name = f"{base_name}__{counter[0]}"
                         rules[new_rule_name] = value
                         node[key] = {'rule': new_rule_name}
                     else:
-                        walker(value)
+                        walker(value, base_name, counter)
 
         # Start walking from inside each of the top-level rule definitions
         rules_map = new_grammar.get('rules', {})
-        for rule_def in list(rules_map.values()):
-            walker(rule_def)
+        processed_rules = set()
+
+        while True:
+            # Find rules that haven't been processed yet.
+            # This is necessary because the walker can add new rules to the map.
+            rules_to_process = {name: rule for name, rule in rules_map.items() if name not in processed_rules}
+            if not rules_to_process:
+                break # No new rules to process, we are done.
+
+            for name, rule_def in rules_to_process.items():
+                # Use a mutable list for the counter to pass by reference
+                walker(rule_def, name, [0])
+                processed_rules.add(name)
         return new_grammar
 
-    def parse(self, text: str, rule: str = None, grammar: str = None):
-        grammar_name = grammar if grammar is not None else self.default_grammar_name
-        if not grammar_name or grammar_name not in self.grammars:
-            raise ValueError(f"Grammar '{grammar_name}' not found. Available grammars: {list(self.grammars.keys())}")
-        
-        config = self.grammars[grammar_name]
-        start_rule = rule if rule is not None else config['start_rule']
+    def _parse_internal(self, text: str, grammar_config: dict, start_rule: str):
+        config = grammar_config
+        start_rule = start_rule if start_rule is not None else config['start_rule']
         finder = LineColumnFinder(text)
         tokens = None
         
@@ -1018,8 +1020,328 @@ class Parser:
             else: # SyntaxError or IndentationError from our lexer
                  return {"status": "error", "message": str(e)}
 
-    def validate(self, text: str, grammar: str = None):
-        result = self.parse(text, grammar=grammar)
+    def _replace_subgrammars_with_placeholders(self, node):
+        """
+        Recursively walks a grammar tree and replaces any `subgrammar`
+        definitions with their `placeholder` content.
+        """
+        visited_nodes = set()
+        def placeholder_walker(node):
+            node_id = id(node)
+            if node_id in visited_nodes: return
+            visited_nodes.add(node_id)
+
+            if isinstance(node, list):
+                for i, item in enumerate(node):
+                    if isinstance(item, dict) and 'subgrammar' in item:
+                        subgrammar_config = item['subgrammar']
+                        placeholder_def = subgrammar_config.get('placeholder', {'sequence': []})
+                        new_item = item.copy()
+                        del new_item['subgrammar']
+                        new_item.update(placeholder_def)
+                        node[i] = new_item
+                    else:
+                        placeholder_walker(item)
+            elif isinstance(node, dict):
+                if 'subgrammar' in node:
+                    subgrammar_config = node['subgrammar']
+                    placeholder_def = subgrammar_config.get('placeholder', {'sequence': []})
+                    del node['subgrammar']
+                    node.update(placeholder_def)
+                    return
+
+                for key, value in node.items():
+                    if key == 'ast': continue
+                    placeholder_walker(value)
+        
+        placeholder_walker(node)
+
+
+
+class PlaceholderParser(_ParserCore):
+    """
+    A parser that operates on a single grammar definition, replacing any
+    `subgrammar` directives with their specified placeholders. It does not
+    load or process any `includes` or `subgrammar` files.
+
+    This is useful for structurally validating or testing a single grammar
+    file in isolation without its dependencies.
+    """
+    @classmethod
+    def from_file(cls, filepath: str):
+        """Loads a grammar from a YAML file for placeholder parsing."""
+        with open(filepath, 'r') as f:
+            grammar_dict = yaml.safe_load(f) or {}
+        return cls(grammar_dict)
+
+    def __init__(self, grammar_dict: dict):
+        """
+        Initializes the placeholder parser with a grammar dictionary.
+        """
+        config_dict = json.loads(json.dumps(grammar_dict))
+
+        # In placeholder mode, we do not process subgrammars from files.
+        
+        # Replace subgrammar directives with their placeholders
+        rules = config_dict.get('rules', {})
+        self._replace_subgrammars_with_placeholders(rules)
+
+        # Linting is disabled because the grammar is incomplete by design,
+        # which would lead to "unreachable rule" errors.
+        self.grammar_config = self._compile_grammar_from_dict(config_dict, lint=False)
+
+    def parse(self, text: str, start_rule: str = None):
+        """
+        Parses the input text using a structural-only version of the grammar
+        with placeholders for subgrammars.
+
+        :param text: The source text to parse.
+        :param start_rule: An optional rule name to begin parsing from. If
+                           not provided, the grammar's default `start_rule`
+                           is used.
+        """
+        return self._parse_internal(text, self.grammar_config, start_rule)
+    
+    def validate(self, text: str):
+        result = self.parse(text)
+        if result['status'] == 'success':
+            return True, 'success'
+        else:
+            return False, result['message']
+
+
+class Parser(_ParserCore):
+    """
+    The main entry point that orchestrates the parsing process, including
+    loading and resolving `includes` and `subgrammar` directives.
+    """
+    @classmethod
+    def from_file(cls, filepath: str):
+        """Loads a grammar from a main YAML file."""
+        with open(filepath, 'r') as f:
+            grammar_dict = yaml.safe_load(f) or {}
+        # The base path for includes/subgrammars is relative to the grammar file.
+        return cls(grammar_dict, base_path=Path(filepath).parent)
+
+    def __init__(self, grammar_dict: dict, base_path: Path = None):
+        """
+        Initializes the parser with a grammar dictionary.
+
+        :param grammar_dict: The grammar definition as a dictionary.
+        :param base_path: The base path for resolving relative `includes` and
+                          `subgrammar` file paths. Defaults to CWD.
+        """
+        if base_path is None:
+            base_path = Path.cwd()
+        
+        unified_grammar = self._build_unified_grammar(grammar_dict, base_path)
+        self.full_grammar = self._compile_grammar_from_dict(unified_grammar)
+
+    def _get_namespace(self, path: Path) -> str:
+        if path.name == "_.yaml":
+            return None # Main grammar has no namespace
+        stem = path.stem
+        return "".join(word.capitalize() for word in stem.replace('-', '_').split('_'))
+
+    def _build_unified_grammar(self, initial_grammar_dict: dict, initial_base_path: Path) -> dict:
+        # 1. Discover all grammars recursively.
+        grammars = {}
+        main_path_key = (initial_base_path / "_.yaml")
+        queue = [(main_path_key, initial_grammar_dict)]
+        processed_paths = set()
+
+        while queue:
+            current_path, grammar_content = queue.pop(0)
+            if current_path in processed_paths: continue
+            processed_paths.add(current_path)
+
+            grammars[current_path] = grammar_content
+            self._lint_leaf_subgrammar_conflict(grammar_content)
+            deps = self._get_subgrammar_dependencies(grammar_content.get('rules', {}))
+
+            for dep in deps:
+                sub_file = dep['subgrammar']['file']
+                sub_path = (current_path.parent / sub_file).resolve()
+                if sub_path not in processed_paths:
+                    with open(sub_path, 'r') as f:
+                        content = yaml.safe_load(f) or {}
+                        queue.append((sub_path, content))
+        
+        # 2. Collect all rules, namespacing subgrammars.
+        unified_rules = {}
+        all_local_rules = {}
+        for path, content in grammars.items():
+            namespace = self._get_namespace(path)
+            rules_to_add = content.get('rules', {})
+            all_local_rules[path] = set(rules_to_add.keys())
+            if namespace:
+                for rule_name, rule_def in rules_to_add.items():
+                    unified_rules[f"{namespace}_{rule_name}"] = json.loads(json.dumps(rule_def))
+            else:
+                unified_rules.update(json.loads(json.dumps(rules_to_add)))
+        
+        # 3. Rewrite all references now that all rules are collected.
+        rules_copy = json.loads(json.dumps(unified_rules))
+        subgrammar_entry_points = set()
+        # Iterate over a copy of keys to allow modification of the dictionary during iteration.
+        for rule_name in list(rules_copy.keys()):
+            rule_def = rules_copy[rule_name]
+            original_path = None
+            if rule_name in initial_grammar_dict.get('rules', {}):
+                 original_path = main_path_key
+            else:
+                namespace_part = rule_name.split('_')[0]
+                for p in grammars:
+                    if self._get_namespace(p) == namespace_part:
+                        original_path = p
+                        break
+            
+            if original_path:
+                local_rules = all_local_rules[original_path]
+                current_namespace = self._get_namespace(original_path)
+                self._rewrite_rule_references(rule_def, current_namespace, local_rules)
+                rules_copy[rule_name] = self._rewrite_subgrammar_directives_in_place(rule_def, original_path.parent, subgrammar_entry_points)
+        
+        final_grammar = initial_grammar_dict.copy()
+        final_grammar['rules'] = rules_copy
+        
+        # Collect all start rules from all grammars to treat them as valid entry points.
+        all_start_rules = set()
+        for path, content in grammars.items():
+            if 'start_rule' in content:
+                namespace = self._get_namespace(path)
+                start_rule = content['start_rule']
+                if namespace:
+                    all_start_rules.add(f"{namespace}_{start_rule}")
+                else:
+                    all_start_rules.add(start_rule)
+
+        all_external_refs = subgrammar_entry_points.union(self._get_all_qualified_references(rules_copy)).union(all_start_rules)
+        final_grammar['_external_refs'] = list(all_external_refs)
+        if 'start_rule' not in final_grammar:
+             raise ValueError("The main grammar must have a 'start_rule'.")
+             
+        return final_grammar
+
+    def _rewrite_rule_references(self, node, namespace, local_rules):
+        if isinstance(node, list):
+            for i, item in enumerate(node):
+                node[i] = self._rewrite_rule_references(item, namespace, local_rules)
+        elif isinstance(node, dict):
+            if 'rule' in node:
+                ref_name = node['rule']
+                if namespace and ref_name in local_rules:
+                    node['rule'] = f"{namespace}_{ref_name}"
+
+            for key, value in node.items():
+                if key not in ['ast', 'subgrammar']:
+                    node[key] = self._rewrite_rule_references(value, namespace, local_rules)
+        return node
+
+    def _rewrite_subgrammar_directives_in_place(self, node, base_path, subgrammar_entry_points):
+        if isinstance(node, list):
+            for i, item in enumerate(node):
+                replacement = self._rewrite_subgrammar_directives_in_place(item, base_path, subgrammar_entry_points)
+                if replacement is not item:
+                    node[i] = replacement
+        elif isinstance(node, dict):
+            if 'subgrammar' in node:
+                sub_config = node['subgrammar']
+                sub_file_str = sub_config['file']
+                sub_path = (base_path / sub_file_str).resolve()
+                sub_namespace = self._get_namespace(sub_path)
+                
+                with open(sub_path, 'r') as f:
+                    sub_content = yaml.safe_load(f) or {}
+
+                start_rule = sub_config.get('rule') or sub_content.get('start_rule')
+                if not start_rule:
+                    raise ValueError(f"Subgrammar '{sub_file_str}' must have a 'start_rule' or a 'rule' must be specified.")
+                
+                qualified_start_rule = f"{sub_namespace}_{start_rule}"
+                subgrammar_entry_points.add(qualified_start_rule)
+
+                new_rule_ref = {'rule': qualified_start_rule}
+                original_item = node.copy()
+                del original_item['subgrammar']
+                new_rule_ref.update(original_item)
+                return new_rule_ref
+            
+            for key, value in node.items():
+                if key != 'ast':
+                    replacement = self._rewrite_subgrammar_directives_in_place(value, base_path, subgrammar_entry_points)
+                    if replacement is not value:
+                        node[key] = replacement
+        return node
+
+    def _get_all_qualified_references(self, rules_to_scan: dict):
+        """Recursively finds all qualified rule references (e.g., Sub_rule)."""
+        refs = set()
+        visited_nodes = set()
+
+        def find_refs(node):
+            node_id = id(node)
+            if node_id in visited_nodes: return
+            visited_nodes.add(node_id)
+
+            if isinstance(node, list):
+                for item in node: find_refs(item)
+            elif isinstance(node, dict):
+                if 'rule' in node:
+                    ref_name = node['rule']
+                    if re.match(r'[A-Z][a-zA-Z0-9]*_', ref_name):
+                        refs.add(ref_name)
+                for key, value in node.items():
+                    if key != 'ast':
+                        find_refs(value)
+        
+        find_refs(rules_to_scan)
+        return refs
+
+    def _get_subgrammar_dependencies(self, rules_to_scan: dict):
+        """Recursively finds all subgrammar directives in a set of rules."""
+        subgrammar_items = []
+        
+        # A set to keep track of nodes we've already visited to avoid infinite loops
+        # with self-referential rule structures (which are valid in Koine).
+        visited_nodes = set()
+
+        def find_subgrammars(node):
+            # Use object ID to handle mutable dicts/lists correctly.
+            node_id = id(node)
+            if node_id in visited_nodes:
+                return
+            visited_nodes.add(node_id)
+
+            if isinstance(node, list):
+                for item in node:
+                    find_subgrammars(item)
+            elif isinstance(node, dict):
+                if 'subgrammar' in node:
+                    subgrammar_items.append(node)
+                else:
+                    for key, value in node.items():
+                        # Don't descend into `ast` blocks.
+                        if key != 'ast':
+                            find_subgrammars(value)
+        
+        find_subgrammars(rules_to_scan)
+        return subgrammar_items
+
+
+    def parse(self, text: str, start_rule: str = None):
+        """
+        Parses the input text using the full grammar, resolving subgrammars.
+
+        :param text: The source text to parse.
+        :param start_rule: An optional rule name to begin parsing from. If
+                           not provided, the grammar's default `start_rule`
+                           is used.
+        """
+        return self._parse_internal(text, self.full_grammar, start_rule)
+
+    def validate(self, text: str):
+        result = self.parse(text)
         if result['status'] == 'success':
             return True, 'success'
         else:

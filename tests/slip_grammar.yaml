@@ -1,0 +1,10 @@
+start_rule: main
+rules:
+  main:
+    subgrammar:
+      file: slip_path.yaml
+      placeholder:
+        {
+          ast: { tag: "path", leaf: true },
+          regex: ".+"
+        }

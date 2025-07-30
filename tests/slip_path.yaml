@@ -1,0 +1,184 @@
+# Koine grammar for parsing the internal structure of a single SLIP path string.
+# This grammar does not parse sub-expressions within dynamic segments `()`, `[]`,
+# or metadata blocks `#()`, instead capturing their contents as text.
+
+start_rule: any_path
+
+rules:
+  any_path:
+    ast: { promote: true }
+    choice:
+      - { rule: set_path }
+      - { rule: del_path }
+      - { rule: get_path }
+
+  del_path:
+    ast: { tag: "del-path" }
+    sequence:
+      - { literal: "~", ast: { discard: true } }
+      - { rule: path_body }
+      - optional: { rule: metadata_block }
+      - { rule: EOI }
+
+  set_path:
+    ast: { tag: "set-path" }
+    sequence:
+      - { rule: actual_path }
+      - optional: { rule: metadata_block }
+      - { literal: ":", ast: { discard: true } }
+      - negative_lookahead: { literal: "/" }
+      - { rule: EOI }
+
+  # =================================================================
+  # Top-level Path Structure
+  # =================================================================
+
+  get_path:
+    ast: { tag: "path" }
+    sequence:
+      - { rule: path_body }
+      - optional: { rule: metadata_block }
+      - { rule: EOI } # End of Input, ensures the whole string is consumed
+
+  path_body:
+    ast: { promote: true }
+    sequence:
+      - optional:
+          ast: { promote: true }
+          rule: pipe_segment
+      - { rule: actual_path }
+
+  actual_path:
+    ast: { promote: true }
+    choice:
+      - sequence: # A path starting with a prefix-like segment
+          - one_or_more:
+              ast: { promote: true }
+              choice:
+                - { rule: root_segment }
+                - { rule: parent_segment }
+                - { rule: pwd_segment }
+          - optional: { rule: path_chain } # The rest of the path is optional
+      - { rule: path_chain } # Any other valid path chain
+
+  path_chain:
+    ast: { promote: true }
+    sequence:
+      - { rule: base_segment }
+      - zero_or_more:
+          ast: { promote: true }
+          rule: suffix_segment
+
+  base_segment:
+    ast: { promote: true }
+    choice:
+      - { rule: name_segment }
+      - { rule: group_segment }
+      - { rule: bracket_segment }
+
+  suffix_segment:
+    ast: { promote: true }
+    choice:
+      - sequence: # A segment that must be preceded by a separator
+          - { rule: separator }
+          - ast: { promote: true }
+            choice:
+              # parent/pwd can be followed by a name without another separator.
+              # This must be tried before the other, more general rules.
+              - sequence:
+                  - { rule: parent_segment, ast: { promote: true } }
+                  - optional: { rule: name_segment, ast: { promote: true } }
+              - sequence:
+                  - { rule: pwd_segment, ast: { promote: true } }
+                  - optional: { rule: name_segment, ast: { promote: true } }
+              # Fallback to a plain name segment
+              - { rule: name_segment }
+      # Segments that don't need a separator
+      - { rule: group_segment }
+      - { rule: bracket_segment }
+
+  separator:
+    ast: { discard: true }
+    choice:
+      - { literal: "." }
+      - { literal: "/" }
+
+  # =================================================================
+  # Individual Segment Definitions
+  # =================================================================
+
+  pipe_segment: { ast: { tag: "pipe" }, literal: "|" }
+  root_segment: { ast: { tag: "root" }, literal: "/" }
+  parent_segment: { ast: { tag: "parent" }, literal: "../" }
+  pwd_segment: { ast: { tag: "pwd" }, literal: "./" }
+
+  name_segment:
+    ast: { tag: "name", leaf: true }
+    regex: '[a-zA-Z0-9-]+(?:\.\.\.)?'
+
+  group_segment:
+    ast: { tag: "group" }
+    sequence:
+      - { literal: "(", ast: { discard: true } }
+      - { rule: expr_for_paren }
+      - { literal: ")", ast: { discard: true } }
+
+  bracket_segment:
+    ast: { promote: true }
+    sequence:
+      - { literal: "[", ast: { discard: true } }
+      - { rule: slice_or_index_content }
+      - { literal: "]", ast: { discard: true } }
+
+  # Check for a slice first (since it contains a ':'), then fall back to index.
+  slice_or_index_content:
+    ast: { promote: true }
+    choice:
+      - { rule: slice_def }
+      - { rule: index_def }
+
+  index_def:
+    ast: { tag: "index" }
+    rule: expr_for_bracket
+
+  slice_def:
+    ast: { tag: "slice" }
+    sequence:
+      - optional: { rule: slice_start_expr }
+      - { literal: ":", ast: { discard: true } }
+      - optional: { rule: slice_end_expr }
+
+  slice_start_expr:
+    ast: { tag: "expr", leaf: true }
+    regex: '[^:\]]*'
+
+  slice_end_expr:
+    ast: { tag: "expr", leaf: true }
+    regex: '[^\]]*'
+
+  metadata_block:
+    ast: { tag: "meta" }
+    sequence:
+      - { literal: "#(", ast: { discard: true } }
+      - { rule: expr_for_paren }
+      - { literal: ")", ast: { discard: true } }
+
+  # =================================================================
+  # Expression Content Capturers & Helpers
+  # =================================================================
+
+  # Captures the raw text inside `(...)`
+  # Captures the raw text inside `(...)`
+  expr_for_paren:
+    ast: { tag: "expr", leaf: true }
+    regex: '[^)]*'
+
+  # Captures the raw text inside `[...]`
+  expr_for_bracket:
+    ast: { tag: "expr", leaf: true }
+    regex: '[^\]]*'
+
+  # Marks the end of input
+  EOI:
+    ast: { discard: true }
+    regex: '\Z'

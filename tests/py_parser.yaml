@@ -60,7 +60,7 @@ rules:
       - { token: "DEDENT", ast: { discard: true } }
   
   statements:
-    ast: { tag: "statements", promote: true }
+    ast: { tag: "statements" }
     one_or_more: { rule: statement }
 
   statement:
