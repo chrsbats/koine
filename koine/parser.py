@@ -152,7 +152,6 @@ def transpile_rule(rule_definition, is_token_grammar=False, rule_name=None):
         ast_config = rule_definition.get('ast', {})
         ast_keys = list(ast_config.keys())
         is_just_a_name = len(ast_keys) == 1 and 'name' in ast_keys
-
         if 'ast' in rule_definition and not is_just_a_name:
             return f'({value} ("")?)'
         return value
@@ -224,6 +223,19 @@ class LineColumnFinder:
 # ==============================================================================
 # 3. PARSE-TREE-TO-AST VISITOR
 # ==============================================================================
+def is_wrapped_leaf(rule_def):
+    """
+    Checks if a rule is a sequence of one item that is a literal or regex,
+    and the item has no ast config of its own. This is a pattern used to
+    prevent optimization of leaf-like rules that were normalized from inline
+    definitions.
+    """
+    if 'sequence' in rule_def and len(rule_def['sequence']) == 1:
+        child = rule_def['sequence'][0]
+        if isinstance(child, dict) and ('literal' in child or 'regex' in child) and 'ast' not in child:
+            return True
+    return False
+
 class AstBuilderVisitor(NodeVisitor):
     def __init__(self, grammar_dict: dict, finder: LineColumnFinder, tokens: list[Token] = None):
         self.grammar_dict = grammar_dict
@@ -295,7 +307,11 @@ class AstBuilderVisitor(NodeVisitor):
         
         children = [c for c in visited_children if c is not None]
 
-        if ast_config.get('leaf') or (not self.tokens and ('literal' in rule_def or 'regex' in rule_def)):
+        is_leaf_rule = ast_config.get('leaf') or \
+                       (not self.tokens and ('literal' in rule_def or 'regex' in rule_def)) or \
+                       is_wrapped_leaf(rule_def)
+
+        if is_leaf_rule:
             line, col = self.get_pos(node, children)
             base_node = {"tag": ast_config.get('tag', rule_name), "text": node.text, "line": line, "col": col}
             if ast_config.get('type') == 'number':
@@ -916,7 +932,11 @@ class _ParserCore:
                     if is_inline_def_with_ast(item):
                         counter[0] += 1
                         new_rule_name = f"{base_name}__{counter[0]}"
-                        rules[new_rule_name] = item
+                        ast_config = item.pop('ast')
+                        rules[new_rule_name] = {
+                            'ast': ast_config,
+                            'sequence': [item]
+                        }
                         node[i] = {'rule': new_rule_name}
                     else:
                         walker(item, base_name, counter)
@@ -928,7 +948,11 @@ class _ParserCore:
                     if is_inline_def_with_ast(value):
                         counter[0] += 1
                         new_rule_name = f"{base_name}__{counter[0]}"
-                        rules[new_rule_name] = value
+                        ast_config = value.pop('ast')
+                        rules[new_rule_name] = {
+                            'ast': ast_config,
+                            'sequence': [value]
+                        }
                         node[key] = {'rule': new_rule_name}
                     else:
                         walker(value, base_name, counter)
@@ -950,6 +974,41 @@ class _ParserCore:
                 processed_rules.add(name)
         return new_grammar
 
+    def _cleanup_ast(self, node):
+        """
+        A post-processing step to recursively remove any internal nodes (`__` in tag)
+        that may have been incorrectly generated. Returns a cleaned version of the node.
+        """
+        if isinstance(node, list):
+            # Build a new list containing cleaned children.
+            new_list = []
+            for item in node:
+                # If the item itself has an internal tag, filter it out.
+                if isinstance(item, dict) and '__' in item.get('tag', ''):
+                    continue
+                # Otherwise, clean the item and add it to the new list.
+                new_list.append(self._cleanup_ast(item))
+            return new_list
+
+        if isinstance(node, dict):
+            # If the node is an AST node (has a 'tag'), clean its children.
+            if 'tag' in node:
+                new_node = node.copy()
+                if 'children' in new_node:
+                    new_node['children'] = self._cleanup_ast(new_node['children'])
+                return new_node
+            # Otherwise, it's a dictionary of named children. Clean its values.
+            else:
+                new_dict = {}
+                for key, value in node.items():
+                    if isinstance(value, dict) and '__' in value.get('tag', ''):
+                        continue
+                    new_dict[key] = self._cleanup_ast(value)
+                return new_dict
+
+        # Primitive values are returned as-is.
+        return node
+
     def _parse_internal(self, text: str, grammar_config: dict, start_rule: str):
         config = grammar_config
         start_rule = start_rule if start_rule is not None else config['start_rule']
@@ -967,6 +1026,7 @@ class _ParserCore:
                 tree = config['grammar'][start_rule].parse(text)
             
             ast = visitor.visit(tree)
+            ast = self._cleanup_ast(ast)
             return {"status": "success", "ast": ast}
 
         except (ParseError, IncompleteParseError, SyntaxError, IndentationError) as e:
