@@ -1178,10 +1178,14 @@ class Parser(_ParserCore):
     @classmethod
     def from_file(cls, filepath: str):
         """Loads a grammar from a main YAML file."""
-        with open(filepath, 'r') as f:
+        # Resolve the filepath to get an absolute path. This ensures that
+        # subgrammars with relative paths are resolved correctly, regardless
+        # of the current working directory.
+        filepath_path = Path(filepath).resolve()
+        with open(filepath_path, 'r') as f:
             grammar_dict = yaml.safe_load(f) or {}
         # The base path for includes/subgrammars is relative to the grammar file.
-        return cls(grammar_dict, base_path=Path(filepath).parent)
+        return cls(grammar_dict, base_path=filepath_path.parent)
 
     def __init__(self, grammar_dict: dict, base_path: Path = None):
         """
@@ -1189,11 +1193,23 @@ class Parser(_ParserCore):
 
         :param grammar_dict: The grammar definition as a dictionary.
         :param base_path: The base path for resolving relative `includes` and
-                          `subgrammar` file paths. Defaults to CWD.
+                          `subgrammar` file paths. **Important**: If your grammar
+                          uses `subgrammar` directives with relative paths, you
+                          **must** provide the base path. The recommended way to do
+                          this is to use `Parser.from_file("path/to/grammar.yaml")`,
+                          which handles this automatically. If you load the grammar
+                          manually, you must pass the path to its parent directory,
+                          e.g., `Parser(my_grammar, base_path="path/to/")`.
+                          If omitted, paths will be resolved relative to the
+                          current working directory, which can lead to errors.
         """
         if base_path is None:
             base_path = Path.cwd()
-        
+        else:
+            # Ensure the provided base path is absolute to prevent ambiguity
+            # when resolving subgrammar paths.
+            base_path = Path(base_path).resolve()
+
         unified_grammar = self._build_unified_grammar(grammar_dict, base_path)
         self.full_grammar = self._compile_grammar_from_dict(unified_grammar)
 
@@ -1221,6 +1237,7 @@ class Parser(_ParserCore):
 
             for dep in deps:
                 sub_file = dep['subgrammar']['file']
+                # Subgrammars are resolved relative to the file they are defined in.
                 sub_path = (current_path.parent / sub_file).resolve()
                 if sub_path not in processed_paths:
                     with open(sub_path, 'r') as f:

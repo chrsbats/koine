@@ -178,11 +178,11 @@ rules:
   operator_segment:
     ast: { tag: "name", leaf: true }
     # Longest first: **, !=, >=, <=, then single-character operators
-    regex: '(\*\*|!=|>=|<=|[-+*=><])'
+    regex: '(\\*\\*|!=|>=|<=|[-+*=><])'
 
   name_segment:
     ast: { tag: "name", leaf: true }
-    regex: '[a-zA-Z0-9-]+(?:\.\.\.)?'
+    regex: '[a-zA-Z0-9-]+(?:\\.\\.\\.)?'
 
   group_segment:
     ast: { tag: "group" }
@@ -245,7 +245,7 @@ rules:
     subgrammar:
       file: "slip_grammar.yaml"
       rule: "expression_list"
-      placeholder: { ast: { tag: "expr", leaf: true }, regex: '[^:\]]+' }
+      placeholder: { ast: { tag: "expr", leaf: true }, regex: '[^:\\]]+' }
 
   metadata_block:
     ast: { tag: "meta" }
@@ -274,7 +274,7 @@ rules:
     subgrammar:
       file: "slip_grammar.yaml"
       rule: "expression_list"
-      placeholder: { ast: { tag: "expr", leaf: true }, regex: '[^:\]]+' }
+      placeholder: { ast: { tag: "expr", leaf: true }, regex: '[^:\\]]+' }
 
   ws_opt_path:
     ast: { discard: true }
@@ -283,7 +283,7 @@ rules:
   # Marks the end of input
   EOI:
     ast: { discard: true }
-    regex: '\Z'
+    regex: '\\Z'
 """
 
 @pytest.fixture(scope="module")

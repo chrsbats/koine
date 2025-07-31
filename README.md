@@ -132,13 +132,12 @@ Let's build a simple calculator that can parse `2 + 3` and transpile it to `(add
     from koine.parser import Parser, Transpiler
 
     # 1. Load the grammars
-    with open("parser_calc.yaml", "r") as f:
-        parser_grammar = yaml.safe_load(f)
+    # Use Parser.from_file to correctly set the base path for subgrammars.
+    parser = Parser.from_file("parser_calc.yaml")
     with open("transpiler_calc.yaml", "r") as f:
         transpiler_grammar = yaml.safe_load(f)
 
     # 2. Instantiate the tools
-    parser = Parser(parser_grammar)
     transpiler = Transpiler(transpiler_grammar)
 
     # 3. Run the pipeline

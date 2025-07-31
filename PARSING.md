@@ -3,15 +3,28 @@
 ```python
 import yaml
 from koine.parser import Parser
+from pathlib import Path
 
-# 1. Load the parser grammar
-with open("parser_calc.yaml", "r") as f:
-    parser_grammar = yaml.safe_load(f)
+# 1. Create a parser from a grammar file.
+# Using Parser.from_file() is the **required** way to create a parser
+# if your grammar uses `subgrammar` directives with relative file paths.
+# It automatically sets the correct base path for resolving those files.
+parser = Parser.from_file("parser_calc.yaml")
 
-# 2. Instantiate the parser
-parser = Parser(parser_grammar)
+# **Warning:** If you load the grammar into a dictionary manually and then pass
+# it to `Parser(grammar_dict)`, Koine does not know the original file's
+# location and will default to using the current working directory to find
+# subgrammars, which will likely fail.
+# If you must load the dictionary manually, you **must** provide the `base_path`:
+#
+# from pathlib import Path
+# grammar_file = Path("path/to/your/parser_calc.yaml")
+# with open(grammar_file, "r") as f:
+#     parser_grammar = yaml.safe_load(f)
+# parser = Parser(parser_grammar, base_path=grammar_file.parent)
 
-# 3. Run the pipeline
+
+# 2. Run the pipeline
 source_code = "2 + 3"
 parse_result = parser.parse(source_code)
 # parse_result is now {'status': 'success', 'ast': ...}
@@ -100,7 +113,7 @@ The `subgrammar` block itself contains keys to control which file to load and ho
 The sibling `ast` block works just like it does for any other rule component. It is most commonly used to `name` the result of the subgrammar parse within a sequence, or to `discard` it entirely.
 
 When Koine encounters a `subgrammar` directive during a full parse (`parser.parse()`), it:
-1.  Loads the subgrammar file specified in the `file` key.
+1.  Loads the subgrammar file specified in the `file` key. Paths are resolved relative to the file they are defined in. For this to work correctly, you **must** instantiate the main parser using `Parser.from_file()` or by providing an explicit `base_path` to the `Parser` constructor. If you do not, Koine will not be able to find subgrammar files in subdirectories.
 2.  Namespaces all rules from the subgrammar by prefixing them with a PascalCase version of the subgrammar's filename (e.g., `rule_name` in `path_parser.yaml` becomes `PathParser_rule_name`).
 3.  Merges these namespaced rules into the parent grammar.
 4.  Replaces the `subgrammar` directive with a call to the subgrammar's namespaced `start_rule`.
