@@ -108,7 +108,7 @@ def test_calc_errors():
     expression_error_cases = [
         ("2 + + 3", (1, 2), " + + 3", "Failed to consume entire input"),
         ("2 +", (1, 2), " +", "Failed to consume entire input"),
-        ("((1)", (1, 5), "", "Unexpected end of input"),
+        ("((1)", (1, 5), "", "Unexpected end of input."),
     ]
 
     for code, expected_pos, expected_snippet, expected_error_text in expression_error_cases:

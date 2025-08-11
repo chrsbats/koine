@@ -707,6 +707,33 @@ class _ParserCore:
         
         return config
 
+    def _get_expected_from_error(self, error, grammar_config):
+        """Builds a set of human-readable expected things from a ParseError."""
+        expected_things = set()
+        if not hasattr(error, 'exprs') or not error.exprs:
+            return expected_things
+
+        grammar = grammar_config['grammar']
+        is_token_grammar = grammar_config.get('is_token_grammar', False)
+        
+        # Build a reverse map from Parsimonious expression objects to our rule names
+        expression_map = {v: k for k, v in grammar.items()}
+
+        for expr in error.exprs:
+            if expr in expression_map:
+                rule_name = expression_map[expr]
+                # Don't show internal, normalized rule names to the user
+                if "__" not in rule_name:
+                    expected_things.add(rule_name)
+            elif not is_token_grammar:
+                if isinstance(expr, Literal) and expr.literal:
+                    expected_things.add(f'literal "{expr.literal}"')
+                elif isinstance(expr, Regex):
+                    # This handles anonymous regexes in text-based grammars.
+                    expected_things.add(f'regex matching r"{expr.pattern}"')
+        
+        return expected_things
+
     def _lint_grammar(self, grammar_dict, external_refs=None):
         """
         Performs static analysis on the grammar to find common issues like
@@ -1049,6 +1076,10 @@ class _ParserCore:
                 else:
                     message = "Syntax error at end of input."
                 
+                expected_things = self._get_expected_from_error(e, config)
+                if expected_things:
+                    message += f" Expected one of: {', '.join(sorted(list(expected_things)))}."
+                
                 return {"status": "error", "message": message}
             elif isinstance(e, (ParseError, IncompleteParseError)):
                 line, col = finder.find(e.pos)
@@ -1057,20 +1088,12 @@ class _ParserCore:
                     snippet = text[e.pos:e.pos+20].split('\n')[0]
                     message = f"Syntax error at L{line}:C{col}. Failed to consume entire input. Unconsumed input begins with: '{snippet}...'"
                 else: # It's a ParseError
-                    expected_things = set()
-                    if hasattr(e, 'exprs'):
-                        expression_map = {config['grammar'][k]: k for k in config['grammar_dict']['rules']}
-                        for expr in e.exprs:
-                            if expr in expression_map:
-                                expected_things.add(expression_map[expr])
-                            elif isinstance(expr, Literal) and expr.literal:
-                                expected_things.add(f'literal "{expr.literal}"')
-                    
                     snippet = text[e.pos:e.pos+20].split('\n')[0]
                     message = f"Syntax error at L{line}:C{col}"
                     if snippet:
                         message += f" near '{snippet}...'"
                     
+                    expected_things = self._get_expected_from_error(e, config)
                     if expected_things:
                         message += f". Expected one of: {', '.join(sorted(list(expected_things)))}."
                     elif not snippet:
