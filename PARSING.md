@@ -900,3 +900,37 @@ The lexer first turns this into a token stream like: `DEF NAME LPAREN RPAREN COL
   }
 }
 ```
+
+---
+
+## 7. Debugging Your Grammar
+
+Writing grammars can be tricky. When your parser doesn't behave as expected, the key is to isolate the problem. Koine provides several tools to help you do this.
+
+### Reading Error Messages
+
+Koine aims to provide informative error messages that tell you what went wrong, where, and why. The error messages follow a consistent format.
+
+**Example Error Message:**
+> Syntax error in input text at L2:C5 while parsing rule 'assignment'. Error occurred near text: '= "hello"'. Expected one of: identifier.
+
+Let's break this down:
+
+-   `Syntax error in input text at L2:C5...`: This tells you the exact location of the error in your **source text** (line 2, column 5). This is the most important piece of information for finding the typo or syntax mistake.
+-   `...while parsing rule 'assignment'...`: This tells you what the parser was trying to do. In this case, it was trying to match the `assignment` rule from your grammar. This helps you narrow down which part of the grammar is failing.
+-   `...Error occurred near text: '= "hello"'`: This shows you a snippet of the input text where the error was detected, giving you context.
+-   `...Expected one of: identifier.`: This is the parser's best guess at what should have come next. In this example, it expected a rule named `identifier` but found something else. This can point to a missing part of your input or an incorrect rule definition.
+
+### Isolating the Problem
+
+Once you have an error message, here are some strategies to pinpoint the cause:
+
+1.  **Test Rules Individually.** If you have a complex grammar, you don't have to parse the entire input at once. Use the optional `start_rule` argument in `parser.parse()` to test just one part of your grammar. For example, if you think your `function_call` rule is buggy, you can test it directly:
+    ```python
+    # Only try to parse the text as a 'function_call'
+    result = parser.parse("my_func(1, 2)", start_rule="function_call")
+    ```
+
+2.  **Start with the Simplest Input.** Don't try to parse a complex, multi-line file at first. Start with the absolute simplest string that should be valid for a given rule (e.g., `"1 + 2"` for an `expression` rule). If that works, gradually add complexity (e.g., `"1 + 2 * 3"`, then `"(1 + 2) * 3"`) until you find the case that breaks.
+
+3.  **Use `PlaceholderParser` for Modular Grammars.** If your grammar is split into multiple files using `subgrammar`, it can be hard to know which file has the bug. As described in the section on modular development, you can use `PlaceholderParser` to test a single grammar file in isolation. By replacing `subgrammar` dependencies with simple `regex` placeholders, you can confirm that the logic inside one file is correct before you integrate it with others.

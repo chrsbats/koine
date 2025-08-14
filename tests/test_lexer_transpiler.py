@@ -138,22 +138,23 @@ def f(x, y):
         code_illegal_char = "def f():\n    a = $"
         result = parser.parse(code_illegal_char)
         self.assertEqual(result['status'], 'error')
-        self.assertIn("Unexpected character at L2:C9: '$'", result['message'])
+        self.assertIn("Unexpected character in input text at L2:C9: '$'", result['message'])
 
         # Case 2: A valid token sequence that is syntactically incorrect
         code_bad_syntax = "def f():\n    return for" # return followed by 'for' is not valid
         result = parser.parse(code_bad_syntax)
         self.assertEqual(result['status'], 'error')
         # The error is at the FOR token.
-        self.assertIn("Syntax error at L2:C12 near 'for'", result['message'])
-        self.assertIn("Unexpected token: FOR", result['message'])
+        self.assertIn("Syntax error in input text at L2:C12", result['message'])
+        self.assertIn("Unexpected token 'FOR'", result['message'])
+        self.assertIn("while parsing rule 'function_definition'", result['message'])
         # self.assertIn("Expected one of: expression", result['message']) # This fails due to lookahead
 
         # Case 3: An indentation error
         code_bad_indent = "def f():\n    a = 1\n  b = 2" # Misaligned indentation
         result = parser.parse(code_bad_indent)
         self.assertEqual(result['status'], 'error')
-        self.assertIn("Indentation error at L3", result['message'])
+        self.assertIn("Indentation error in input text at L3:C1", result['message'])
 
 
     def test_transpiler_state_set_with_dynamic_value(self):

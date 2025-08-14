@@ -106,9 +106,9 @@ def test_calc_errors():
 
     # Test cases that should result in a ParseError when parsed as 'expression'
     expression_error_cases = [
-        ("2 + + 3", (1, 2), " + + 3", "Failed to consume entire input"),
-        ("2 +", (1, 2), " +", "Failed to consume entire input"),
-        ("((1)", (1, 5), "", "Unexpected end of input."),
+        ("2 + + 3", (1, 2), " + + 3", "Rule 'expression' parsed successfully, but failed to consume the entire input"),
+        ("2 +", (1, 2), " +", "Rule 'expression' parsed successfully, but failed to consume the entire input"),
+        ("((1)", (1, 5), "", "Unexpected end of input while parsing '((1)'"),
     ]
 
     for code, expected_pos, expected_snippet, expected_error_text in expression_error_cases:
@@ -125,8 +125,8 @@ def test_calc_errors():
 
     # Test cases that should result in IncompleteParseError with the default 'program' rule
     program_error_cases = [
-        ("2 $ 3", (1, 3), "$ 3", "Failed to consume entire input"),
-        ("1 + 2\n3 * 4\n5 $ 6", (3, 3), "$ 6", "Failed to consume entire input"),
+        ("2 $ 3", (1, 3), "$ 3", "Rule 'program' parsed successfully, but failed to consume the entire input"),
+        ("1 + 2\n3 * 4\n5 $ 6", (3, 3), "$ 6", "Rule 'program' parsed successfully, but failed to consume the entire input"),
     ]
 
     for code, expected_pos, expected_snippet, expected_error_text in program_error_cases:
@@ -1518,6 +1518,29 @@ class TestKoineGrammarGeneration(unittest.TestCase):
             if path.exists(): path.unlink()
             if a_path.exists(): a_path.unlink()
             if b_path.exists(): b_path.unlink()
+
+    def test_internal_rule_name_not_in_error_message(self):
+        """
+        Tests that an error arising from an auto-generated internal rule
+        reports the original, user-facing rule name in the error message.
+        """
+        grammar = {
+            'start_rule': 'main',
+            'rules': {
+                'main': {
+                    'sequence': [
+                        {
+                            'ast': {'tag': 'something'},
+                            'choice': [
+                                "this is invalid" # Should be a dict
+                            ]
+                        }
+                    ]
+                }
+            }
+        }
+        with self.assertRaisesRegex(ValueError, r"\(in rule 'main'\)"):
+            Parser(grammar)
 
 
 if __name__ == '___':

@@ -78,7 +78,7 @@ class StatefulLexer:
                         tokens.append(Token('DEDENT', '', line_num + 1, 1))
                     
                     if indent_level != indent_stack[-1]:
-                        raise IndentationError(f"Indentation error at L{line_num+1}")
+                        raise IndentationError(f"Indentation error in input text at L{line_num+1}:C1")
                 
                 elif action != 'skip':
                     tokens.append(Token(token_type, value, line_num, col))
@@ -92,7 +92,7 @@ class StatefulLexer:
                 pos = longest_match.end()
             else:
                 col = pos - line_start + 1
-                raise SyntaxError(f"Unexpected character at L{line_num}:C{col}: '{text[pos]}'")
+                raise SyntaxError(f"Unexpected character in input text at L{line_num}:C{col}: '{text[pos]}' ")
 
         # At end of file, dedent all remaining levels
         if self.handles_indentation:
@@ -111,7 +111,8 @@ def transpile_rule(rule_definition, is_token_grammar=False, rule_name=None):
     if not isinstance(rule_definition, dict):
         error_msg = f"Rule definition must be a dictionary, but got {type(rule_definition).__name__}: {rule_definition!r}"
         if rule_name:
-            error_msg += f" (in rule '{rule_name}')"
+            user_facing_rule_name = rule_name.split('__')[0]
+            error_msg += f" (in rule '{user_facing_rule_name}')"
         raise ValueError(error_msg)
 
     rule_keys = {
@@ -139,8 +140,10 @@ def transpile_rule(rule_definition, is_token_grammar=False, rule_name=None):
         raise ValueError(f"'{rule_type}' is not supported when a lexer is defined. Use 'token' instead.")
     elif rule_type == 'literal':
         escaped_value = value.replace("\"", "\\\"")
-        return f'"{escaped_value}"'
+        return f' "{escaped_value}"'
     elif rule_type == 'regex':
+        # To embed a regex in a parsimonious ~r"..." string, any double quotes
+        # within the regex itself must be escaped.
         escaped_value = value.replace('"', '\\"')
         return f'~r"{escaped_value}"'
     elif rule_type == 'rule':
@@ -1067,18 +1070,26 @@ class _ParserCore:
                 
                 # Recalculate token_string as it's not available in this scope
                 token_string = " ".join([t.type for t in tokens])
-                error_token_idx = len(token_string[:e.pos].split(' ')) - 1
+                # The number of spaces before the error position corresponds to the token index.
+                # This is more robust than splitting the string.
+                error_token_idx = token_string[:e.pos].count(' ')
                 
                 if error_token_idx < len(tokens):
                     error_token = tokens[error_token_idx]
                     line, col = error_token.line, error_token.col
-                    message = f"Syntax error at L{line}:C{col} near '{error_token.value}'. Unexpected token: {error_token.type}."
-                else:
-                    message = "Syntax error at end of input."
+                    message = f"Syntax error in input text at L{line}:C{col}. Unexpected token '{error_token.type}' ('{error_token.value}') while parsing rule '{start_rule}' "
+                else:  # Error at end of input
+                    if tokens:
+                        last_token = tokens[-1]
+                        line, col = last_token.line, last_token.col + len(last_token.value)
+                    else:
+                        # No tokens were produced. The error is at the end of the text.
+                        line, col = finder.find(len(text))
+                    message = f"Syntax error in input text at L{line}:C{col}. Unexpected end of input while parsing rule '{start_rule}' "
                 
                 expected_things = self._get_expected_from_error(e, config)
                 if expected_things:
-                    message += f" Expected one of: {', '.join(sorted(list(expected_things)))}."
+                    message += f" Expected one of: {', '.join(sorted(list(expected_things)))}"
                 
                 return {"status": "error", "message": message}
             elif isinstance(e, (ParseError, IncompleteParseError)):
@@ -1086,18 +1097,24 @@ class _ParserCore:
                 
                 if isinstance(e, IncompleteParseError):
                     snippet = text[e.pos:e.pos+20].split('\n')[0]
-                    message = f"Syntax error at L{line}:C{col}. Failed to consume entire input. Unconsumed input begins with: '{snippet}...'"
+                    message = f"Parse Error in input text at L{line}:C{col}. Rule '{start_rule}' parsed successfully, but failed to consume the entire input. Unconsumed text begins with: '{snippet}...'"
                 else: # It's a ParseError
                     snippet = text[e.pos:e.pos+20].split('\n')[0]
-                    message = f"Syntax error at L{line}:C{col}"
-                    if snippet:
-                        message += f" near '{snippet}...'"
+                    message = f"Syntax error in input text at L{line}:C{col} while parsing rule '{start_rule}'"
                     
                     expected_things = self._get_expected_from_error(e, config)
+                    
                     if expected_things:
-                        message += f". Expected one of: {', '.join(sorted(list(expected_things)))}."
-                    elif not snippet:
-                        message += ". Unexpected end of input."
+                        message += f". Expected one of: {', '.join(sorted(list(expected_things)))}"
+                        if snippet:
+                             message += f", but found text starting with: '{snippet}...'"
+                        else:
+                             message += ", but reached the end of the input"
+                    elif snippet:
+                        message += f" near text: '{snippet}...'"
+                    else:
+                        contextual_text = text if len(text) < 40 else text[:37] + "..."
+                        message += f". Unexpected end of input while parsing '{contextual_text}'"
 
                 return {"status": "error", "message": message}
             else: # SyntaxError or IndentationError from our lexer
@@ -1319,7 +1336,7 @@ class Parser(_ParserCore):
         all_external_refs = subgrammar_entry_points.union(self._get_all_qualified_references(rules_copy)).union(all_start_rules)
         final_grammar['_external_refs'] = list(all_external_refs)
         if 'start_rule' not in final_grammar:
-             raise ValueError("The main grammar must have a 'start_rule'.")
+             raise ValueError("The main grammar must have a 'start_rule' ")
              
         return final_grammar
 
