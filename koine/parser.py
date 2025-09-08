@@ -1,26 +1,53 @@
 import re
 from bisect import bisect_right
 import json
-import ast
+from dataclasses import dataclass
+from typing import Optional
+from copy import deepcopy
+from contextlib import contextmanager
 from functools import reduce
 from operator import getitem
 from pathlib import Path
 import yaml
 from parsimonious.grammar import Grammar
 from parsimonious.nodes import NodeVisitor
-from parsimonious.expressions import Literal, Quantifier, Lookahead, Regex
+from parsimonious.expressions import Literal, Quantifier, Lookahead, Regex, Expression
 from parsimonious.exceptions import ParseError, IncompleteParseError, LeftRecursionError, VisitationError, BadGrammar, UndefinedLabel
+
+def sanitize_to_json_data(obj): return json.loads(json.dumps(obj))
+
+def flatten(items):
+    if items is None or items == []: return []
+    stack = list(reversed(items if isinstance(items, list) else [items]))
+    out = []
+    while stack:
+        x = stack.pop()
+        if x is None or x == []: continue
+        if isinstance(x, list):
+            stack.extend(reversed(x))
+        else:
+            out.append(x)
+    return out
+
+def apply_type(text, type_name):
+    if type_name == 'number':
+        val = float(text)
+        return int(val) if val.is_integer() else val
+    if type_name == 'bool':
+        return str(text).lower() == 'true'
+    if type_name == 'null':
+        return None
+    return text
 
 # ==============================================================================
 # 0. LEXER
 # ==============================================================================
+@dataclass
 class Token:
-    """A simple token container."""
-    def __init__(self, type, value, line, col):
-        self.type = type
-        self.value = value
-        self.line = line
-        self.col = col
+    type: str
+    value: str
+    line: int
+    col: int
     def __repr__(self):
         return f"Token({self.type}, '{self.value}', L{self.line}:C{self.col})"
 
@@ -44,6 +71,8 @@ class StatefulLexer:
 
     def tokenize(self, text: str) -> list[Token]:
         # The caller is responsible for stripping any unwanted leading/trailing whitespace.
+        # Normalize Windows/Mac newlines to '\n' for consistent indentation handling.
+        text = text.replace('\r\n', '\n').replace('\r', '\n')
         text = text.expandtabs(self.tab_width)
         tokens = []
         indent_stack = [0]
@@ -65,20 +94,27 @@ class StatefulLexer:
                 col = pos - line_start + 1
 
                 if action == 'handle_indent':
-                    # This is a newline token, value is like "\n    "
-                    # We don't emit a token for the newline itself.
-                    indent_level = len(value) - 1 # Length of whitespace after '\n'
-                    
-                    if indent_level > indent_stack[-1]:
-                        indent_stack.append(indent_level)
-                        tokens.append(Token('INDENT', '', line_num + 1, 1))
-                    
-                    while indent_level < indent_stack[-1]:
-                        indent_stack.pop()
-                        tokens.append(Token('DEDENT', '', line_num + 1, 1))
-                    
-                    if indent_level != indent_stack[-1]:
-                        raise IndentationError(f"Indentation error in input text at L{line_num+1}:C1")
+                    # value is like "\n[ \t]*"
+                    indent_level = len(value) - 1  # whitespace after '\n'
+                    # Detect if the next line is blank or whitespace-only. If so, do not
+                    # emit INDENT/DEDENT for this newline; indentation should be decided
+                    # by the next non-blank line.
+                    j = longest_match.end()
+                    while j < len(text) and text[j] in (' ', '\t'):
+                        j += 1
+                    blank_line = (j >= len(text)) or (text[j] == '\n')
+
+                    if not blank_line:
+                        if indent_level > indent_stack[-1]:
+                            indent_stack.append(indent_level)
+                            tokens.append(Token('INDENT', '', line_num + 1, 1))
+
+                        while indent_level < indent_stack[-1]:
+                            indent_stack.pop()
+                            tokens.append(Token('DEDENT', '', line_num + 1, 1))
+
+                        if indent_level != indent_stack[-1]:
+                            raise IndentationError(f"Indentation error in input text at L{line_num+1}:C1")
                 
                 elif action != 'skip':
                     tokens.append(Token(token_type, value, line_num, col))
@@ -92,7 +128,7 @@ class StatefulLexer:
                 pos = longest_match.end()
             else:
                 col = pos - line_start + 1
-                raise SyntaxError(f"Unexpected character in input text at L{line_num}:C{col}: '{text[pos]}' ")
+                raise SyntaxError(f"Unexpected character in input text at L{line_num}:C{col}: '{text[pos]}'")
 
         # At end of file, dedent all remaining levels
         if self.handles_indentation:
@@ -139,8 +175,8 @@ def transpile_rule(rule_definition, is_token_grammar=False, rule_name=None):
     elif rule_type in ['literal', 'regex'] and is_token_grammar:
         raise ValueError(f"'{rule_type}' is not supported when a lexer is defined. Use 'token' instead.")
     elif rule_type == 'literal':
-        escaped_value = value.replace("\"", "\\\"")
-        return f' "{escaped_value}"'
+        escaped_value = value.replace("\\", "\\\\").replace('"', '\\"')
+        return f'"{escaped_value}"'
     elif rule_type == 'regex':
         # To embed a regex in a parsimonious ~r"..." string, any double quotes
         # within the regex itself must be escaped.
@@ -191,7 +227,7 @@ def transpile_grammar(grammar_dict):
     if is_token_grammar:
         token_types = {spec['token'] for spec in grammar_dict['lexer']['tokens'] if 'token' in spec}
         token_types.update(['INDENT', 'DEDENT'])
-        for token_type in token_types:
+        for token_type in sorted(token_types):
             # Match the token name and consume any trailing whitespace that separates it
             grammar_lines.append(f'{token_type} = ~r"{token_type}\\s*"')
 
@@ -266,6 +302,11 @@ class AstBuilderVisitor(NodeVisitor):
         if self.tokens and rule_name in self.token_rule_names:
             if self.token_idx < len(self.tokens):
                 token = self.tokens[self.token_idx]
+                if token.type != rule_name:
+                    raise ValueError(
+                        f"Internal lexer/parser mismatch: expected token '{rule_name}' "
+                        f"but got '{token.type}' at L{token.line}:C{token.col}"
+                    )
                 self.token_idx += 1
 
                 spec_ast = {}
@@ -283,13 +324,8 @@ class AstBuilderVisitor(NodeVisitor):
                              "col": token.col}
 
                 spec_type = spec_ast.get('type')
-                if spec_type == 'number':
-                    val = float(token.value)
-                    base_node['value'] = int(val) if val.is_integer() else val
-                elif spec_type == 'bool':
-                    base_node['value'] = token.value.lower() == 'true'
-                elif spec_type == 'null':
-                    base_node['value'] = None
+                if spec_type in ('number', 'bool', 'null'):
+                    base_node['value'] = apply_type(token.value, spec_type)
                 else:
                     base_node['value'] = token.value
                 return base_node
@@ -297,7 +333,8 @@ class AstBuilderVisitor(NodeVisitor):
 
         if rule_name not in self.grammar_rules:
             if isinstance(node.expr, Lookahead) or (not node.text and not visited_children): return None
-            if isinstance(node.expr, Quantifier) and node.expr.max == 1: return visited_children[0]
+            if isinstance(node.expr, Quantifier) and node.expr.max == 1:
+                return visited_children[0] if visited_children else None
             if (isinstance(node.expr, Literal) or isinstance(node.expr, Regex)) and not self.tokens:
                 tag = "literal" if isinstance(node.expr, Literal) else "regex"
                 line, col = self.finder.find(node.start)
@@ -316,28 +353,19 @@ class AstBuilderVisitor(NodeVisitor):
 
         if is_leaf_rule:
             line, col = self.get_pos(node, children)
-            base_node = {"tag": ast_config.get('tag', rule_name), "text": node.text, "line": line, "col": col}
-            if ast_config.get('type') == 'number':
-                val = float(node.text)
-                base_node['value'] = int(val) if val.is_integer() else val
-            elif ast_config.get('type') == 'bool': base_node['value'] = node.text.lower() == 'true'
-            elif ast_config.get('type') == 'null': base_node['value'] = None
+            leaf_text = node.text
+            if self.tokens and children:
+                texts = [c['text'] for c in flatten(children) if isinstance(c, dict) and 'text' in c]
+                if texts:
+                    leaf_text = "".join(texts)
+            base_node = {"tag": ast_config.get('tag', rule_name), "text": leaf_text, "line": line, "col": col}
+            if 'type' in ast_config:
+                base_node['value'] = apply_type(leaf_text, ast_config['type'])
             return base_node
 
         if ast_config.get('promote'):
             if isinstance(children, list):
-                # Deeply flatten the list of children. This handles cases like a
-                # promoted quantifier over a promoted rule, which can create
-                # nested lists of children.
-                flat_list = []
-                stack = list(reversed(children))
-                while stack:
-                    item = stack.pop()
-                    if isinstance(item, list):
-                        stack.extend(reversed(item))
-                    elif item is not None:
-                        flat_list.append(item)
-                children = flat_list
+                children = flatten(children)
 
             # Determine what to promote. Could be a single node, a list, or None.
             promoted_node = None
@@ -376,17 +404,11 @@ class AstBuilderVisitor(NodeVisitor):
                 
                 if 'type' in ast_config:
                     new_type = ast_config['type']
-                    text = promoted_node['text']
-                    if new_type == 'number':
-                        try:
-                            val = float(text)
-                            promoted_node['value'] = int(val) if val.is_integer() else val
-                        except (ValueError, TypeError):
-                            promoted_node['value'] = text # Fallback
-                    elif new_type == 'bool':
-                        promoted_node['value'] = text.lower() == 'true'
-                    elif new_type == 'null':
-                        promoted_node['value'] = None
+                    text = promoted_node.get('text')
+                    try:
+                        promoted_node['value'] = apply_type(text, new_type)
+                    except (ValueError, TypeError):
+                        promoted_node['value'] = text
                 
                 return promoted_node
             
@@ -509,16 +531,7 @@ class AstBuilderVisitor(NodeVisitor):
                 base_node['children'] = []
              else:
                 nodes_to_process = unwrapped_children if isinstance(unwrapped_children, list) else [unwrapped_children]
-                # Deeply flatten the list to handle nested promotions from children.
-                flat_list = []
-                stack = list(reversed(nodes_to_process))
-                while stack:
-                    item = stack.pop()
-                    if isinstance(item, list):
-                        stack.extend(reversed(item))
-                    elif item is not None:
-                        flat_list.append(item)
-                base_node['children'] = flat_list
+                base_node['children'] = flatten(nodes_to_process)
 
         return base_node
 
@@ -534,6 +547,16 @@ class Transpiler:
         self.indent_str = transpiler_config.get('indent', '    ')
         self.indent_level = 0
         self.state = {}
+
+    @contextmanager
+    def _indented(self, flag):
+        if flag:
+            self.indent_level += 1
+        try:
+            yield
+        finally:
+            if flag:
+                self.indent_level -= 1
 
     def _get_path(self, path: str):
         try:
@@ -594,74 +617,82 @@ class Transpiler:
         
         transpile_config = self.transpile_rules.get(node.get('tag'), {})
         
-        if transpile_config.get('indent'): self.indent_level += 1
-        
         output = ""
-        current_indent = self.indent_str * self.indent_level
+        with self._indented(transpile_config.get('indent')):
+            current_indent = self.indent_str * self.indent_level
 
-        # Prepare substitutions once for use in conditions, templates, and state_set
-        subs = {}
-        children = node.get('children', [])
-        if isinstance(children, dict):
-            for name, child in children.items(): subs[name] = self._transpile_node(child)
-        elif isinstance(children, list):
-            joiner = transpile_config.get('join_children_with', ' ')
-            if '\n' in joiner:
-                joiner = joiner.replace('\n', '\n' + current_indent)
-            child_strings = [self._transpile_node(c) for c in children]
-            child_strings = [s for s in child_strings if s]  # drop blanks
-            joined = joiner.join(child_strings)
-            if transpile_config.get('indent') and joined:
-                joined = current_indent + joined
-            subs['children'] = joined
-        
-        if 'op' in node: subs['op'] = self._transpile_node(node['op'])
-        if 'left' in node: subs['left'] = self._transpile_node(node['left'])
-        if 'right' in node: subs['right'] = self._transpile_node(node['right'])
-
-        template = None
-        # Check for the new 'cases' structure first.
-        if 'cases' in transpile_config:
-            # The full context for evaluation has access to the raw node, state, and transpiled children
-            context = {'node': node, 'state': self.state, **subs}
+            # Prepare substitutions once for use in conditions, templates, and state_set
+            subs = {}
+            children = node.get('children', [])
+            if isinstance(children, dict):
+                for name, child in children.items():
+                    subs[name] = self._transpile_node(child)
+            elif isinstance(children, list):
+                joiner = transpile_config.get('join_children_with', ' ')
+                if '\n' in joiner:
+                    joiner = joiner.replace('\n', '\n' + current_indent)
+                child_strings = [self._transpile_node(c) for c in children]
+                child_strings = [s for s in child_strings if s]  # drop blanks
+                joined = joiner.join(child_strings)
+                if transpile_config.get('indent') and joined:
+                    joined = current_indent + joined
+                subs['children'] = joined
             
-            for case in transpile_config['cases']:
-                if 'if' in case:
-                    if self._evaluate_condition(case['if'], context):
-                        template = case['then']
-                        break
-                elif 'default' in case:
-                    template = case['default']
-                    break
-        elif 'template' in transpile_config:
-            template = transpile_config['template']
-        
-        if template is not None:
-            output = template.format(**subs)
-        elif transpile_config.get('use') == 'value': output = str(node.get('value', ''))
-        elif transpile_config.get('use') == 'text': output = node['text']
-        elif 'value' in transpile_config:
-            output = transpile_config['value']
-        else:
-            if 'value' in node:
-                output = str(node['value'])
-            elif 'text' in node:
-                output = node['text']
-            else:
-                raise ValueError(f"Don't know how to transpile node: {node}")
-        
-        # After producing output, update state for subsequent nodes.
-        if 'state_set' in transpile_config:
-            for key_template, value in transpile_config['state_set'].items():
-                final_key = key_template.format(**subs)
-                final_value = value
-                if isinstance(value, str):
-                    final_value = value.format(**subs)
-                self._set_path(final_key, final_value)
+            if 'op' in node: subs['op'] = self._transpile_node(node['op'])
+            if 'left' in node: subs['left'] = self._transpile_node(node['left'])
+            if 'right' in node: subs['right'] = self._transpile_node(node['right'])
 
-        if transpile_config.get('indent'):
-            self.indent_level -= 1
-        return output
+            template = None
+            # Check for the new 'cases' structure first.
+            if 'cases' in transpile_config:
+                # The full context for evaluation has access to the raw node, state, and transpiled children
+                context = {'node': node, 'state': self.state, **subs}
+                
+                for case in transpile_config['cases']:
+                    if 'if' in case:
+                        if self._evaluate_condition(case['if'], context):
+                            template = case['then']
+                            break
+                    elif 'default' in case:
+                        template = case['default']
+                        break
+            elif 'template' in transpile_config:
+                template = transpile_config['template']
+            
+            if template is not None:
+                try:
+                    output = template.format(**subs)
+                except KeyError as ke:
+                    raise ValueError(f"Missing placeholder '{ke.args[0]}' in template for tag '{node.get('tag')}'")
+            elif transpile_config.get('use') == 'value':
+                output = str(node.get('value', ''))
+            elif transpile_config.get('use') == 'text':
+                output = node['text']
+            elif 'value' in transpile_config:
+                output = transpile_config['value']
+            else:
+                if 'value' in node:
+                    output = str(node['value'])
+                elif 'text' in node:
+                    output = node['text']
+                else:
+                    raise ValueError(f"Don't know how to transpile node: {node}")
+            
+            # After producing output, update state for subsequent nodes.
+            if 'state_set' in transpile_config:
+                for key_template, value in transpile_config['state_set'].items():
+                    try:
+                        final_key = key_template.format(**subs)
+                    except KeyError as ke:
+                        raise ValueError(f"Missing placeholder '{ke.args[0]}' in state_set key for tag '{node.get('tag')}'")
+                    final_value = value
+                    if isinstance(value, str):
+                        try:
+                            final_value = value.format(**subs)
+                        except KeyError as ke:
+                            raise ValueError(f"Missing placeholder '{ke.args[0]}' in state_set value for tag '{node.get('tag')}'")
+                    self._set_path(final_key, final_value)
+            return output
 
 # ==============================================================================
 # 5. MAIN PARSER CLASS
@@ -713,7 +744,15 @@ class _ParserCore:
     def _get_expected_from_error(self, error, grammar_config):
         """Builds a set of human-readable expected things from a ParseError."""
         expected_things = set()
-        if not hasattr(error, 'exprs') or not error.exprs:
+        # Normalize across Parsimonious versions: prefer error.exprs, then error.expr, then error.expressions
+        exprs = []
+        if hasattr(error, 'exprs') and error.exprs:
+            exprs = list(error.exprs)
+        elif hasattr(error, 'expr') and error.expr:
+            exprs = [error.expr]
+        elif hasattr(error, 'expressions') and error.expressions:
+            exprs = list(error.expressions)
+        if not exprs:
             return expected_things
 
         grammar = grammar_config['grammar']
@@ -722,18 +761,66 @@ class _ParserCore:
         # Build a reverse map from Parsimonious expression objects to our rule names
         expression_map = {v: k for k, v in grammar.items()}
 
-        for expr in error.exprs:
+        visited = set()
+
+        def _collect_expected(expr):
+            # Avoid revisiting the same expression node
+            if expr in visited:
+                return
+            visited.add(expr)
+
+            if not is_token_grammar:
+                # Literal leaf
+                if isinstance(expr, Literal) and getattr(expr, 'literal', None):
+                    expected_things.add(f'literal "{expr.literal}"')
+
+                # Regex leaf (handle different parsimonious internals)
+                elif isinstance(expr, Regex):
+                    pattern = getattr(expr, 'pattern', None)
+                    if not pattern:
+                        re_obj = getattr(expr, 're', None)
+                        if hasattr(re_obj, 'pattern'):
+                            pattern = re_obj.pattern
+                    if not pattern:
+                        pattern = getattr(expr, 'regexp', None)
+                    if pattern:
+                        expected_things.add(f'regex matching r"{pattern}"')
+
+            # Recurse into common composite expression containers
+            members = getattr(expr, 'members', None)
+            if members:
+                for m in members:
+                    _collect_expected(m)
+
+            # Also attempt common single-child attributes used by parsimonious nodes
+            for attr in ('element', 'member', 'expr', 'expression', 'term'):
+                child = getattr(expr, attr, None)
+                if child is not None and child is not expr:
+                    _collect_expected(child)
+
+            # Generic deep crawl: inspect attributes that are expressions or containers of expressions
+            try:
+                for v in vars(expr).values():
+                    if v is None:
+                        continue
+                    if isinstance(v, Expression):
+                        _collect_expected(v)
+                    elif isinstance(v, (list, tuple, set)):
+                        for item in v:
+                            if isinstance(item, Expression):
+                                _collect_expected(item)
+            except Exception:
+                # Some parsimonious nodes may not expose __dict__ or may raise during vars()
+                pass
+
+        for expr in exprs:
             if expr in expression_map:
                 rule_name = expression_map[expr]
                 # Don't show internal, normalized rule names to the user
                 if "__" not in rule_name:
                     expected_things.add(rule_name)
-            elif not is_token_grammar:
-                if isinstance(expr, Literal) and expr.literal:
-                    expected_things.add(f'literal "{expr.literal}"')
-                elif isinstance(expr, Regex):
-                    # This handles anonymous regexes in text-based grammars.
-                    expected_things.add(f'regex matching r"{expr.pattern}"')
+            # Always descend to find nested literal/regex expectations
+            _collect_expected(expr)
         
         return expected_things
 
@@ -932,7 +1019,7 @@ class _ParserCore:
         for these rules by name.
         """
         # Deep copy to avoid modifying the user's original dict
-        new_grammar = json.loads(json.dumps(grammar_dict))
+        new_grammar = deepcopy(grammar_dict)
         rules = new_grammar.get('rules', {})
 
         def is_inline_def_with_ast(d):
@@ -971,10 +1058,17 @@ class _ParserCore:
                     else:
                         walker(item, base_name, counter)
             elif isinstance(node, dict):
+                # Hoist inline ast from a single-item sequence onto the parent rule, if parent has no ast
+                if 'sequence' in node and isinstance(node['sequence'], list) and len(node['sequence']) == 1:
+                    only = node['sequence'][0]
+                    if is_inline_def_with_ast(only) and 'ast' not in node:
+                        ast_config = only.pop('ast')
+                        node['ast'] = ast_config
+
                 for key, value in list(node.items()):
                     if key in ['ast', 'transpile']:
                         continue
-                    
+
                     if is_inline_def_with_ast(value):
                         counter[0] += 1
                         new_rule_name = f"{base_name}__{counter[0]}"
@@ -1009,6 +1103,10 @@ class _ParserCore:
         A post-processing step to recursively remove any internal nodes (`__` in tag)
         that may have been incorrectly generated. Returns a cleaned version of the node.
         """
+        if isinstance(node, dict):
+            # Fast-path: leaf AST node without children and not an internal tag
+            if 'tag' in node and 'children' not in node and '__' not in node.get('tag', ''):
+                return node
         if isinstance(node, list):
             # Build a new list containing cleaned children.
             new_list = []
@@ -1077,7 +1175,7 @@ class _ParserCore:
                 if error_token_idx < len(tokens):
                     error_token = tokens[error_token_idx]
                     line, col = error_token.line, error_token.col
-                    message = f"Syntax error in input text at L{line}:C{col}. Unexpected token '{error_token.type}' ('{error_token.value}') while parsing rule '{start_rule}' "
+                    message = f"Syntax error in input text at L{line}:C{col}. Unexpected token '{error_token.type}' ('{error_token.value}') while parsing rule '{start_rule}'"
                 else:  # Error at end of input
                     if tokens:
                         last_token = tokens[-1]
@@ -1085,7 +1183,7 @@ class _ParserCore:
                     else:
                         # No tokens were produced. The error is at the end of the text.
                         line, col = finder.find(len(text))
-                    message = f"Syntax error in input text at L{line}:C{col}. Unexpected end of input while parsing rule '{start_rule}' "
+                    message = f"Syntax error in input text at L{line}:C{col}. Unexpected end of input while parsing rule '{start_rule}'"
                 
                 expected_things = self._get_expected_from_error(e, config)
                 if expected_things:
@@ -1103,18 +1201,16 @@ class _ParserCore:
                     message = f"Syntax error in input text at L{line}:C{col} while parsing rule '{start_rule}'"
                     
                     expected_things = self._get_expected_from_error(e, config)
-                    
-                    if expected_things:
-                        message += f". Expected one of: {', '.join(sorted(list(expected_things)))}"
-                        if snippet:
-                             message += f", but found text starting with: '{snippet}...'"
-                        else:
-                             message += ", but reached the end of the input"
-                    elif snippet:
-                        message += f" near text: '{snippet}...'"
-                    else:
+
+                    if snippet == "":
                         contextual_text = text if len(text) < 40 else text[:37] + "..."
                         message += f". Unexpected end of input while parsing '{contextual_text}'"
+                    else:
+                        if expected_things:
+                            message += f". Expected one of: {', '.join(sorted(list(expected_things)))}"
+                            message += f", but found text starting with: '{snippet}...'"
+                        else:
+                            message += f" near text: '{snippet}...'"
 
                 return {"status": "error", "message": message}
             else: # SyntaxError or IndentationError from our lexer
@@ -1151,7 +1247,7 @@ class _ParserCore:
                     return
 
                 for key, value in node.items():
-                    if key == 'ast': continue
+                    if key in ('ast', 'transpile'): continue
                     placeholder_walker(value)
         
         placeholder_walker(node)
@@ -1171,14 +1267,16 @@ class PlaceholderParser(_ParserCore):
     def from_file(cls, filepath: str):
         """Loads a grammar from a YAML file for placeholder parsing."""
         with open(filepath, 'r') as f:
-            grammar_dict = yaml.safe_load(f) or {}
+            raw = yaml.safe_load(f) or {}
+            grammar_dict = sanitize_to_json_data(raw)
         return cls(grammar_dict)
 
     def __init__(self, grammar_dict: dict):
         """
         Initializes the placeholder parser with a grammar dictionary.
         """
-        config_dict = json.loads(json.dumps(grammar_dict))
+        grammar_dict = sanitize_to_json_data(grammar_dict)
+        config_dict = deepcopy(grammar_dict)
 
         # In placeholder mode, we do not process subgrammars from files.
         
@@ -1190,7 +1288,7 @@ class PlaceholderParser(_ParserCore):
         # which would lead to "unreachable rule" errors.
         self.grammar_config = self._compile_grammar_from_dict(config_dict, lint=False)
 
-    def parse(self, text: str, start_rule: str = None):
+    def parse(self, text: str, start_rule: Optional[str] = None) -> dict:
         """
         Parses the input text using a structural-only version of the grammar
         with placeholders for subgrammars.
@@ -1202,7 +1300,7 @@ class PlaceholderParser(_ParserCore):
         """
         return self._parse_internal(text, self.grammar_config, start_rule)
     
-    def validate(self, text: str):
+    def validate(self, text: str) -> tuple[bool, str]:
         result = self.parse(text)
         if result['status'] == 'success':
             return True, 'success'
@@ -1223,7 +1321,8 @@ class Parser(_ParserCore):
         # of the current working directory.
         filepath_path = Path(filepath).resolve()
         with open(filepath_path, 'r') as f:
-            grammar_dict = yaml.safe_load(f) or {}
+            raw = yaml.safe_load(f) or {}
+            grammar_dict = sanitize_to_json_data(raw)
         # The base path for includes/subgrammars is relative to the grammar file.
         return cls(grammar_dict, base_path=filepath_path.parent)
 
@@ -1243,6 +1342,8 @@ class Parser(_ParserCore):
                           If omitted, paths will be resolved relative to the
                           current working directory, which can lead to errors.
         """
+        grammar_dict = sanitize_to_json_data(grammar_dict)
+
         if base_path is None:
             base_path = Path.cwd()
         else:
@@ -1281,9 +1382,24 @@ class Parser(_ParserCore):
                 sub_path = (current_path.parent / sub_file).resolve()
                 if sub_path not in processed_paths:
                     with open(sub_path, 'r') as f:
-                        content = yaml.safe_load(f) or {}
+                        raw = yaml.safe_load(f) or {}
+                        content = sanitize_to_json_data(raw)
                         queue.append((sub_path, content))
         
+        # Guard against duplicate namespaces across different files
+        ns_to_path = {}
+        for path in grammars.keys():
+            ns = self._get_namespace(path)
+            if not ns:
+                continue
+            prev = ns_to_path.get(ns)
+            if prev and prev != path:
+                raise ValueError(
+                    f"Namespace collision: files '{prev}' and '{path}' resolve to the same namespace '{ns}'. "
+                    "Please rename one of them to avoid rule name conflicts."
+                )
+            ns_to_path[ns] = path
+
         # 2. Collect all rules, namespacing subgrammars.
         unified_rules = {}
         all_local_rules = {}
@@ -1293,12 +1409,12 @@ class Parser(_ParserCore):
             all_local_rules[path] = set(rules_to_add.keys())
             if namespace:
                 for rule_name, rule_def in rules_to_add.items():
-                    unified_rules[f"{namespace}_{rule_name}"] = json.loads(json.dumps(rule_def))
+                    unified_rules[f"{namespace}_{rule_name}"] = deepcopy(rule_def)
             else:
-                unified_rules.update(json.loads(json.dumps(rules_to_add)))
+                unified_rules.update({k: deepcopy(v) for k, v in rules_to_add.items()})
         
         # 3. Rewrite all references now that all rules are collected.
-        rules_copy = json.loads(json.dumps(unified_rules))
+        rules_copy = deepcopy(unified_rules)
         subgrammar_entry_points = set()
         # Iterate over a copy of keys to allow modification of the dictionary during iteration.
         for rule_name in list(rules_copy.keys()):
@@ -1336,7 +1452,7 @@ class Parser(_ParserCore):
         all_external_refs = subgrammar_entry_points.union(self._get_all_qualified_references(rules_copy)).union(all_start_rules)
         final_grammar['_external_refs'] = list(all_external_refs)
         if 'start_rule' not in final_grammar:
-             raise ValueError("The main grammar must have a 'start_rule' ")
+             raise ValueError("The main grammar must have a 'start_rule'")
              
         return final_grammar
 
@@ -1351,7 +1467,7 @@ class Parser(_ParserCore):
                     node['rule'] = f"{namespace}_{ref_name}"
 
             for key, value in node.items():
-                if key not in ['ast', 'subgrammar']:
+                if key not in ['ast', 'subgrammar', 'transpile']:
                     node[key] = self._rewrite_rule_references(value, namespace, local_rules)
         return node
 
@@ -1369,7 +1485,8 @@ class Parser(_ParserCore):
                 sub_namespace = self._get_namespace(sub_path)
                 
                 with open(sub_path, 'r') as f:
-                    sub_content = yaml.safe_load(f) or {}
+                    raw = yaml.safe_load(f) or {}
+                    sub_content = sanitize_to_json_data(raw)
 
                 start_rule = sub_config.get('rule') or sub_content.get('start_rule')
                 if not start_rule:
@@ -1385,7 +1502,7 @@ class Parser(_ParserCore):
                 return new_rule_ref
             
             for key, value in node.items():
-                if key != 'ast':
+                if key not in ['ast', 'transpile']:
                     replacement = self._rewrite_subgrammar_directives_in_place(value, base_path, subgrammar_entry_points)
                     if replacement is not value:
                         node[key] = replacement
@@ -1409,7 +1526,7 @@ class Parser(_ParserCore):
                     if re.match(r'[A-Z][a-zA-Z0-9]*_', ref_name):
                         refs.add(ref_name)
                 for key, value in node.items():
-                    if key != 'ast':
+                    if key not in ['ast', 'transpile']:
                         find_refs(value)
         
         find_refs(rules_to_scan)
@@ -1439,14 +1556,14 @@ class Parser(_ParserCore):
                 else:
                     for key, value in node.items():
                         # Don't descend into `ast` blocks.
-                        if key != 'ast':
+                        if key not in ['ast', 'transpile']:
                             find_subgrammars(value)
         
         find_subgrammars(rules_to_scan)
         return subgrammar_items
 
 
-    def parse(self, text: str, start_rule: str = None):
+    def parse(self, text: str, start_rule: Optional[str] = None) -> dict:
         """
         Parses the input text using the full grammar, resolving subgrammars.
 
@@ -1457,7 +1574,7 @@ class Parser(_ParserCore):
         """
         return self._parse_internal(text, self.full_grammar, start_rule)
 
-    def validate(self, text: str):
+    def validate(self, text: str) -> tuple[bool, str]:
         result = self.parse(text)
         if result['status'] == 'success':
             return True, 'success'

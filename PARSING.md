@@ -108,7 +108,7 @@ The `subgrammar` block itself contains keys to control which file to load and ho
 | :------------ | :------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `file`        | **(Required)** The path to the self-contained `.yaml` grammar file to load.                                                                               |
 | `rule`        | (Optional) The name of the rule within the subgrammar to use as the entry point. Defaults to the subgrammar's `start_rule`.                                |
-| `placeholder` | (Optional) A rule definition (e.g., `{ regex: "..." }`) used for structural parsing with `parse_with_placeholders()`. See the section on modular development below. |
+| `placeholder` | (Optional) A rule definition (e.g., `{ regex: "..." }`) used by PlaceholderParser for structural parsing when developing in isolation. See the section on modular development below. |
 
 The sibling `ast` block works just like it does for any other rule component. It is most commonly used to `name` the result of the subgrammar parse within a sequence, or to `discard` it entirely.
 
