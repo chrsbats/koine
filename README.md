@@ -4,7 +4,7 @@ _A declarative, data-driven parser generator for creating languages, ASTs, and t
 [![PyPI](https://img.shields.io/pypi/v/koine.svg)](https://pypi.org/project/koine/)
 [![Python](https://img.shields.io/pypi/pyversions/koine.svg)](https://pypi.org/project/koine/)
 [![Build](https://github.com/chrsbats/koine/actions/workflows/ci.yml/badge.svg)](https://github.com/chrsbats/koine/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/chrsbats/koine/branch/main/graph/badge.svg)](https://codecov.io/gh/chrsbats/koine)
+[![Coverage](https://img.shields.io/badge/coverage-90%25%2B-brightgreen)](https://github.com/chrsbats/koine/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 Koine allows you to define a complete language pipeline—from lexing and validation to Abstract Syntax Tree (AST) generation to final code transpilation—using a simple, human-readable, and JSON-compatible data structure. This means you can write your grammars in YAML, JSON, TOML, or any other format that can be loaded into a nested dictionary structure. The engine consumes these definitions and produces clean, JSON-compatible ASTs.
