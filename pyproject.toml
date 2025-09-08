@@ -13,11 +13,11 @@ authors = [
 ]
 description = "A declarative, data-driven parser generator for creating languages, ASTs, and transpilers."
 readme = "README.md"
-license = { file="LICENSE" }
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.9"
 classifiers = [
     "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Topic :: Software Development :: Compilers",
     "Topic :: Text Processing :: General",
