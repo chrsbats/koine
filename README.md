@@ -1,6 +1,7 @@
 # Koine
 
 _A declarative, data-driven parser generator for creating languages, ASTs, and transpilers._
+
 [![PyPI](https://img.shields.io/pypi/v/koine.svg)](https://pypi.org/project/koine/)
 [![Python](https://img.shields.io/pypi/pyversions/koine.svg)](https://pypi.org/project/koine/)
 [![Build](https://github.com/chrsbats/koine/actions/workflows/ci.yml/badge.svg)](https://github.com/chrsbats/koine/actions/workflows/ci.yml)
