@@ -1,9 +1,7 @@
 # Parsing with Koine: From Text to AST
 
 ```python
-import yaml
 from koine.parser import Parser
-from pathlib import Path
 
 # 1. Create a parser from a grammar file.
 # Using Parser.from_file() is the **required** way to create a parser
@@ -17,10 +15,10 @@ parser = Parser.from_file("parser_calc.yaml")
 # subgrammars, which will likely fail.
 # If you must load the dictionary manually, you **must** provide the `base_path`:
 #
+# from safer_yaml import load  # Optional third-party YAML loader; install separately.
 # from pathlib import Path
 # grammar_file = Path("path/to/your/parser_calc.yaml")
-# with open(grammar_file, "r") as f:
-#     parser_grammar = yaml.safe_load(f)
+# parser_grammar = load(grammar_file)
 # parser = Parser(parser_grammar, base_path=grammar_file.parent)
 
 
@@ -44,6 +42,12 @@ A Koine grammar is a dictionary (often written in YAML for readability) with two
 
 -   `start_rule`: The name of the rule where parsing should begin.
 -   `rules`: A dictionary where each key is a rule's name and its value defines the rule's logic.
+
+`Parser.from_file()` and `PlaceholderParser.from_file()` accept YAML 1.2 and JSON.
+All referenced subgrammar files use the same native loader, with no host YAML
+dependency. YAML 1.2 core scalar semantics match the retained Python reference's
+[safer-yaml](https://github.com/chrsbats/safer-yaml) loader: unquoted `yes`, `no`,
+`on`, and `off` remain strings, while `true` and `false` are booleans.
 
 ### Core Building Blocks
 
@@ -792,6 +796,11 @@ When a `lexer` is defined:
 2.  The parser then works on this stream of tokens, not the raw text.
 3.  Grammar rules must change from using `literal` and `regex` to using `token` to match token types.
 
+The [native implementation](native/README.md) supports this same path through
+`Parser` and `PlaceholderParser`; tokenization and parsing both run natively.
+CRLF/CR newlines normalize to LF and tabs expand at eight-code-point tab stops.
+Among equal-length lexer matches, the first declared specification wins.
+
 ### Defining Tokens
 
 The `tokens` key contains an ordered list of token definitions. For each position in the text, Koine finds the token definition whose `regex` matches the longest string of text. Each token definition is a dictionary with the following keys:
@@ -873,20 +882,20 @@ The lexer first turns this into a token stream like: `DEF NAME LPAREN RPAREN COL
 ```json
 {
   "tag": "function",
-  "text": "def my_func():\\n    return",
+  "text": "DEF NAME LPAREN RPAREN COLON INDENT RETURN DEDENT",
   "line": 1, "col": 1,
   "children": {
-    "name": {
+    "name": [{
       "tag": "NAME",
       "text": "my_func",
       "value": "my_func",
       "line": 1,
       "col": 5
-    },
-    "body": {
+    }],
+    "body": [{
       "tag": "statements",
-      "text": "return",
-      "line": 2, "col": 5,
+      "text": "RETURN ",
+      "line": 1, "col": 1,
       "children": [
         {
           "tag": "RETURN",
@@ -896,10 +905,16 @@ The lexer first turns this into a token stream like: `DEF NAME LPAREN RPAREN COL
           "col": 5
         }
       ]
-    }
+    }]
   }
 }
 ```
+
+This is the raw representation in both implementations. Branch `text` contains
+the matched token-name stream, including any consumed separator spaces. Token
+leaves contain the normalized source value and its source position. Promoted
+sequences retain list wrappers, including single-item lists. Parent positions use
+the first direct AST child that has location fields, or default to line 1/column 1.
 
 ---
 

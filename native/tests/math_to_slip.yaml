@@ -1,0 +1,7 @@
+rules:
+  binary_op:
+    template: "({left} {op} {right})"
+  power_op:
+    value: "**"
+  number:
+    use: value

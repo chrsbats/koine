@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from functools import reduce
 from operator import getitem
 from pathlib import Path
-import yaml
+import safer_yaml
 from parsimonious.grammar import Grammar
 from parsimonious.nodes import NodeVisitor
 from parsimonious.expressions import Literal, Quantifier, Lookahead, Regex, Expression
@@ -547,6 +547,11 @@ class Transpiler:
         self.indent_str = transpiler_config.get('indent', '    ')
         self.indent_level = 0
         self.state = {}
+
+    @classmethod
+    def from_file(cls, filepath: str):
+        """Loads transpiler rules from a YAML 1.2 or JSON file."""
+        return cls(safer_yaml.load(filepath) or {})
 
     @contextmanager
     def _indented(self, flag):
@@ -1252,6 +1257,14 @@ class _ParserCore:
         
         placeholder_walker(node)
 
+    def parse_transpile(self, text: str, transpiler, start_rule: Optional[str] = None) -> dict:
+        """Parse and generate output, matching the native combined-call API."""
+        if not isinstance(transpiler, Transpiler):
+            raise TypeError("transpiler must be a Transpiler")
+        result = self.parse(text, start_rule=start_rule)
+        if result['status'] != 'success':
+            return result
+        return {'status': 'success', 'text': transpiler.transpile(result['ast'])}
 
 
 class PlaceholderParser(_ParserCore):
@@ -1265,10 +1278,9 @@ class PlaceholderParser(_ParserCore):
     """
     @classmethod
     def from_file(cls, filepath: str):
-        """Loads a grammar from a YAML file for placeholder parsing."""
-        with open(filepath, 'r') as f:
-            raw = yaml.safe_load(f) or {}
-            grammar_dict = sanitize_to_json_data(raw)
+        """Loads a grammar from a YAML 1.2 or JSON file for placeholder parsing."""
+        raw = safer_yaml.load(filepath) or {}
+        grammar_dict = sanitize_to_json_data(raw)
         return cls(grammar_dict)
 
     def __init__(self, grammar_dict: dict):
@@ -1315,14 +1327,13 @@ class Parser(_ParserCore):
     """
     @classmethod
     def from_file(cls, filepath: str):
-        """Loads a grammar from a main YAML file."""
+        """Loads a grammar from a main YAML 1.2 or JSON file."""
         # Resolve the filepath to get an absolute path. This ensures that
         # subgrammars with relative paths are resolved correctly, regardless
         # of the current working directory.
         filepath_path = Path(filepath).resolve()
-        with open(filepath_path, 'r') as f:
-            raw = yaml.safe_load(f) or {}
-            grammar_dict = sanitize_to_json_data(raw)
+        raw = safer_yaml.load(filepath_path) or {}
+        grammar_dict = sanitize_to_json_data(raw)
         # The base path for includes/subgrammars is relative to the grammar file.
         return cls(grammar_dict, base_path=filepath_path.parent)
 
@@ -1366,6 +1377,7 @@ class Parser(_ParserCore):
         main_path_key = (initial_base_path / "_.yaml")
         queue = [(main_path_key, initial_grammar_dict)]
         processed_paths = set()
+        queued_paths = {main_path_key}
 
         while queue:
             current_path, grammar_content = queue.pop(0)
@@ -1380,11 +1392,11 @@ class Parser(_ParserCore):
                 sub_file = dep['subgrammar']['file']
                 # Subgrammars are resolved relative to the file they are defined in.
                 sub_path = (current_path.parent / sub_file).resolve()
-                if sub_path not in processed_paths:
-                    with open(sub_path, 'r') as f:
-                        raw = yaml.safe_load(f) or {}
-                        content = sanitize_to_json_data(raw)
-                        queue.append((sub_path, content))
+                if sub_path not in processed_paths and sub_path not in queued_paths:
+                    queued_paths.add(sub_path)
+                    raw = safer_yaml.load(sub_path) or {}
+                    content = sanitize_to_json_data(raw)
+                    queue.append((sub_path, content))
         
         # Guard against duplicate namespaces across different files
         ns_to_path = {}
@@ -1433,7 +1445,8 @@ class Parser(_ParserCore):
                 local_rules = all_local_rules[original_path]
                 current_namespace = self._get_namespace(original_path)
                 self._rewrite_rule_references(rule_def, current_namespace, local_rules)
-                rules_copy[rule_name] = self._rewrite_subgrammar_directives_in_place(rule_def, original_path.parent, subgrammar_entry_points)
+                rules_copy[rule_name] = self._rewrite_subgrammar_directives_in_place(
+                    rule_def, original_path.parent, subgrammar_entry_points, grammars)
         
         final_grammar = initial_grammar_dict.copy()
         final_grammar['rules'] = rules_copy
@@ -1471,10 +1484,10 @@ class Parser(_ParserCore):
                     node[key] = self._rewrite_rule_references(value, namespace, local_rules)
         return node
 
-    def _rewrite_subgrammar_directives_in_place(self, node, base_path, subgrammar_entry_points):
+    def _rewrite_subgrammar_directives_in_place(self, node, base_path, subgrammar_entry_points, grammars):
         if isinstance(node, list):
             for i, item in enumerate(node):
-                replacement = self._rewrite_subgrammar_directives_in_place(item, base_path, subgrammar_entry_points)
+                replacement = self._rewrite_subgrammar_directives_in_place(item, base_path, subgrammar_entry_points, grammars)
                 if replacement is not item:
                     node[i] = replacement
         elif isinstance(node, dict):
@@ -1484,8 +1497,9 @@ class Parser(_ParserCore):
                 sub_path = (base_path / sub_file_str).resolve()
                 sub_namespace = self._get_namespace(sub_path)
                 
-                with open(sub_path, 'r') as f:
-                    raw = yaml.safe_load(f) or {}
+                sub_content = grammars.get(sub_path)
+                if sub_content is None:
+                    raw = safer_yaml.load(sub_path) or {}
                     sub_content = sanitize_to_json_data(raw)
 
                 start_rule = sub_config.get('rule') or sub_content.get('start_rule')
@@ -1503,7 +1517,7 @@ class Parser(_ParserCore):
             
             for key, value in node.items():
                 if key not in ['ast', 'transpile']:
-                    replacement = self._rewrite_subgrammar_directives_in_place(value, base_path, subgrammar_entry_points)
+                    replacement = self._rewrite_subgrammar_directives_in_place(value, base_path, subgrammar_entry_points, grammars)
                     if replacement is not value:
                         node[key] = replacement
         return node

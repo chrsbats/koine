@@ -1,0 +1,42 @@
+[build-system]
+requires = ["scikit-build-core>=0.12"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "koine"
+version = "0.11.0"
+authors = [
+  { name="Chris Bates", email="1314008+chrsbats@users.noreply.github.com" },
+]
+description = "Native Koine runtime: runtime grammars, parsing and AST transpilation over the C API."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.9"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: C++",
+    "Topic :: Software Development :: Compilers",
+    "Topic :: Text Processing :: General",
+]
+
+dependencies = []
+
+[project.urls]
+"Homepage" = "https://github.com/chrsbats/koine"
+"Bug Tracker" = "https://github.com/chrsbats/koine/issues"
+
+[tool.scikit-build]
+minimum-version = "build-system.requires"
+wheel.packages = ["python/koine"]
+wheel.py-api = "py3"
+wheel.exclude = ["koine/*.lib", "koine/*.exp"]
+build.targets = ["koine"]
+install.components = ["python"]
+
+[tool.scikit-build.cmake.define]
+BUILD_TESTING = "OFF"

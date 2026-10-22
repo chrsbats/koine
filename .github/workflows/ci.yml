@@ -7,7 +7,7 @@ on:
     branches: [main, master]
 
 jobs:
-  test:
+  pure:
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -22,5 +22,108 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
       - name: Run tests with coverage
+        run: pytest --cov=koine --cov-fail-under=90
+
+  native-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install test dependencies
+        run: pip install pytest pytest-subtests parsimonious regex safer-yaml pyyaml
+      - name: Build and run native suites
         run: |
-          pytest --cov=koine --cov-fail-under=90
+          cmake -S native -B build/native -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_TESTING=ON -DPython3_EXECUTABLE="$(command -v python)"
+          cmake --build build/native --parallel
+          ctest --test-dir build/native --output-on-failure
+
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      CMAKE_GENERATOR: Visual Studio 17 2022
+      CMAKE_BUILD_PARALLEL_LEVEL: "4"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: ilammy/msvc-dev-cmd@v1
+      - name: Build native wheel
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          pip install build scikit-build-core cmake
+          python -m build native --wheel --no-isolation --outdir build/wheels
+          $wheel = Get-ChildItem build/wheels/*win_amd64.whl
+          if (-not $wheel) { throw "win_amd64 wheel was not produced" }
+      - name: Verify clean native install
+        shell: pwsh
+        run: |
+          $wheel = Get-ChildItem build/wheels/*win_amd64.whl | Select-Object -First 1
+          python -m pip install --no-deps $wheel.FullName
+          python native/tests/check_installed.py tests
+      - name: Build and run native suites
+        shell: pwsh
+        run: |
+          pip install pytest pytest-subtests parsimonious regex safer-yaml pyyaml
+          $python = (Get-Command python).Source
+          cmake -S native -B build/native -G "$env:CMAKE_GENERATOR" -A x64 `
+            -DBUILD_TESTING=ON "-DPython3_EXECUTABLE=$python"
+          cmake --build build/native --config Release --parallel
+          ctest --test-dir build/native -C Release --output-on-failure
+          python -c "import pytest, koine.parser as p; p.transpile_grammar = lambda grammar: None; raise SystemExit(pytest.main(['-q', 'tests/test_edges.py', '-k', 'not transpile_grammar']))"
+      - name: Build and test Nim with the MSVC backend
+        shell: pwsh
+        run: |
+          $root = $env:GITHUB_WORKSPACE
+          Invoke-WebRequest https://nim-lang.org/download/nim-2.2.12_x64.zip -OutFile build/nim.zip
+          Expand-Archive build/nim.zip -DestinationPath build/nim-toolchain
+          $env:PATH = "$root\build\nim-toolchain\nim-2.2.12\bin;$env:PATH"
+          python -m build --sdist --outdir build/sdist
+          tar -xzf (Get-ChildItem build/sdist/koine-*.tar.gz).FullName -C build
+          $src = Join-Path $root "build\koine-0.11.0"
+          Push-Location $src
+          nimble --nimbleDir:"$root\build\nimble" install -y
+          if ($LASTEXITCODE -ne 0) { throw "nimble install failed" }
+          $pkg = Get-ChildItem "$root\build\nimble\pkgs2" -Directory |
+            Where-Object { $_.Name -like "koine-*" } | Select-Object -First 1
+          $out = Join-Path $root "build\nim-out"
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          Copy-Item (Join-Path $pkg.FullName "koine\koine.dll") $out
+          $env:KOINE_FIXTURES = Join-Path $root "tests"
+          foreach ($backend in @("c", "cpp")) {
+            nim $backend --cc:vcc --path:$pkg.FullName `
+              --out:"$out\consumer-$backend.exe" (Join-Path $root "native\tests\test_nim.nim")
+            if ($LASTEXITCODE -ne 0) { throw "nim $backend failed" }
+            $text = (& "$out\consumer-$backend.exe" 2>&1 | Out-String)
+            $count = ([regex]::Matches($text, "\[OK\]")).Count
+            Write-Host "$backend OK=$count"
+            if ($count -ne 8) { Write-Host $text; throw "expected 8 cases" }
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: koine-windows-wheel
+          path: build/wheels/*.whl
+
+  wheels:
+    runs-on: ubuntu-latest
+    container: quay.io/pypa/manylinux_2_28_x86_64
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and verify saved distributions
+        run: |
+          source /opt/rh/gcc-toolset-14/enable 2>/dev/null || \
+            source /opt/rh/gcc-toolset-13/enable 2>/dev/null || true
+          gcc --version | head -1
+          export PATH=/opt/python/cp312-cp312/bin:$PATH
+          pip install build scikit-build-core auditwheel cmake ninja
+          python -m build --sdist --wheel --outdir dist
+          python -m build native --wheel --outdir dist-native
+          auditwheel repair --plat manylinux_2_28_x86_64 \
+            --wheel-dir dist-native dist-native/koine-*-linux_x86_64.whl
+          python native/tests/check_distribution.py \
+            dist/koine-*.tar.gz dist/koine-*any.whl dist-native/koine-*manylinux*.whl

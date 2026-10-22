@@ -1,25 +1,18 @@
 # Transpiling with Koine: From AST to Text
 
 ```python
-import yaml
 from koine.parser import Parser, Transpiler
 
 # Assume 'ast' is a pre-existing Abstract Syntax Tree from a parser.
 # For example, after running:
 #
-# with open("parser_calc.yaml", "r") as f:
-#     parser_grammar = yaml.safe_load(f)
-# parser = Parser(parser_grammar)
+# parser = Parser.from_file("parser_calc.yaml")
 # ast = parser.parse("2 + 3")['ast']
 
-# 1. Load the transpiler grammar
-with open("transpiler_calc.yaml", "r") as f:
-    transpiler_grammar = yaml.safe_load(f)
+# 1. Load and prepare the transpiler grammar (native YAML/JSON loading).
+transpiler = Transpiler.from_file("transpiler_calc.yaml")
 
-# 2. Instantiate the transpiler
-transpiler = Transpiler(transpiler_grammar)
-
-# 3. Transpile the AST
+# 2. Transpile the AST
 # output_string = transpiler.transpile(ast)
 # output_string is now "(add 2 3)"
 ```
@@ -27,6 +20,14 @@ transpiler = Transpiler(transpiler_grammar)
 This document is a comprehensive guide to Koine's transpiling capabilities. It explains how to take a structured Abstract Syntax Tree (AST), as produced by a Koine parser, and transform it into a new string format.
 
 This guide focuses _exclusively_ on the transpiling pipeline: **AST -> Text**. The process of generating an AST from source code is covered in `PARSING.md`. We will assume you already have a valid AST.
+
+The [native implementation](native/README.md#transpilation) also accepts ordinary
+dictionaries through `Transpiler(grammar).transpile(ast)`; `Transpiler()` uses an
+empty grammar and the value/text fallbacks. Its approved template scope
+is named substitutions such as `{name}` and doubled braces (`{{` / `}}`) for
+literal braces. Python-specific `str.format` specs, conversions and field-access
+expressions are explicit native errors. Native `state` inspection returns a
+detached dictionary snapshot.
 
 ---
 
@@ -261,6 +262,9 @@ sub
 ## 4. Stateful Transpilation
 
 For some languages, the transpilation of a node depends on what has been transpiled before. Koine manages this with a `state` object that can be read by `cases` and modified by the `state_set` directive.
+
+State is shared within one top-level AST traversal. Each new `transpile()` call
+starts with empty state and resets indentation.
 
 This is perfect for tasks like emitting `let` or `var` only for the first declaration of a variable.
 

@@ -72,3 +72,9 @@ htmlcov/
 Thumbs.db
 
 .aider*
+
+# Nimble's generated native runtime/header component
+/nim/koine/
+
+# Windows development venv (see ../recollector)
+.venvs/

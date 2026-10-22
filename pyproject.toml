@@ -1,13 +1,10 @@
-# This section tells pip what tools to use to build your package.
-# It's standard boilerplate; you can just copy it.
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
-# This is the main section for your project's metadata.
 [project]
 name = "koine"
-version = "0.10.3"
+version = "0.11.0"
 authors = [
   { name="Chris Bates", email="1314008+chrsbats@users.noreply.github.com" },
 ]
@@ -18,25 +15,21 @@ license-files = ["LICENSE"]
 requires-python = ">=3.9"
 classifiers = [
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3 :: Only",
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
-    "Operating System :: OS Independent",
+    "Programming Language :: Python :: C++",
     "Topic :: Software Development :: Compilers",
     "Topic :: Text Processing :: General",
 ]
 
-# These are the libraries your project depends on.
-# pip will automatically install these when it installs your package.
 dependencies = [
-    "parsimonious",
-    "pyyaml",
+    "parsimonious>=0.10",
+    "safer-yaml>=0.1.1",
 ]
 
-# These URLs will show up on the PyPI project page.
 [project.urls]
 "Homepage" = "https://github.com/chrsbats/koine"
 "Bug Tracker" = "https://github.com/chrsbats/koine/issues"
@@ -45,7 +38,13 @@ dependencies = [
 dev = [
     "pytest",
     "pytest-cov",
+    "pytest-subtests",
 ]
+
+[tool.setuptools]
+packages = ["koine"]
+package-dir = { koine = "reference/koine" }
+include-package-data = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

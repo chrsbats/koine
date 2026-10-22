@@ -18,7 +18,7 @@ This approach separates the _what_ (your language definition) from the _how_ (th
 - **Pipeline-based:** Use Koine for simple validation, structured AST generation, or full transpilation.
 - **Composable Grammars:** Break large languages into modular, independently testable files using `subgrammar` directives. Placeholders allow you to develop each part in isolation before linking them into a complete system.
 - **Powerful:** Handles operator precedence, left/right associativity, lookaheads, and features an integrated stateful lexer for indentation-based syntax.
-- **Language Agnostic:** The Koine format is a specification. The engine can be implemented in any language (current implementation is Python).
+- **Language Agnostic:** One native C++ engine supplies Python and Nim packages through a small C interface. Grammars remain ordinary JSON-compatible data.
 
 ## Why Koine?
 
@@ -49,9 +49,51 @@ Koine is designed to be an exceptionally fast tool for **prototyping Domain-Spec
 
 ## Installation
 
+`pip install koine` selects the native package where a platform wheel exists
+(currently Linux x86-64, `manylinux_2_27`/`manylinux_2_28`) and otherwise installs
+the pure-Python implementation. Force the pure version on any platform with:
+
 ```bash
-pip install koine
+pip install --no-binary=koine koine
 ```
+
+The pure package depends on `parsimonious` and `safer-yaml`; the native package has
+no Python runtime dependencies. Both expose the same `koine` API.
+
+From the checkout, the root project builds the pure package:
+
+```bash
+python3 -m pip install .
+```
+
+Build the native package from its subproject instead:
+
+```bash
+CC=gcc-15 CXX=g++-15 python3 -m pip install ./native
+```
+
+Native builds need CMake 3.22+ and a C++17 toolchain; GCC 15 is recommended and
+GCC versions before 12 are rejected because of an exception-cleanup compiler bug.
+The build downloads its pinned native dependencies and bundles PCRE2 and rapidyaml
+into the shared core. A prebuilt platform wheel needs no compiler.
+
+For Nim 2 (default ARC/ORC), install from the repository root with:
+
+```bash
+CC=gcc-15 CXX=g++-15 nimble install
+```
+
+Both packages use `import koine`, prepare grammars once and manage native handles
+automatically. See [native/README.md](native/README.md) for Nim examples, deployment,
+development checks and platform coverage. Linux x86-64 and Windows x64 are tested;
+platforms without a native wheel use the pure-Python package. Verified Linux wheels
+support the `manylinux_2_27` / `manylinux_2_28` x86-64 tags; the Windows wheel is
+`py3-none-win_amd64`. Docker is not a build or runtime dependency.
+
+Grammar files accept YAML 1.2 and JSON natively. Unquoted `yes`, `no`, `on`, and
+`off` remain strings; `true` and `false` are booleans. The Python behavioral
+reference is retained under `reference/koine` and uses
+[safer-yaml](https://github.com/chrsbats/safer-yaml).
 
 ---
 
@@ -132,19 +174,14 @@ Let's build a simple calculator that can parse `2 + 3` and transpile it to `(add
     The `parser.parse()` method takes the source text to parse. For testing individual rules, you can also pass an optional `start_rule="<rule_name>"` argument to override the default entry point.
 
     ```python
-    import yaml
     from koine.parser import Parser, Transpiler
 
     # 1. Load the grammars
     # Use Parser.from_file to correctly set the base path for subgrammars.
     parser = Parser.from_file("parser_calc.yaml")
-    with open("transpiler_calc.yaml", "r") as f:
-        transpiler_grammar = yaml.safe_load(f)
+    transpiler = Transpiler.from_file("transpiler_calc.yaml")
 
-    # 2. Instantiate the tools
-    transpiler = Transpiler(transpiler_grammar)
-
-    # 3. Run the pipeline
+    # 2. Run the pipeline
     source_code = "2 * (3 + 4)"
     parse_result = parser.parse(source_code)
 
@@ -295,10 +332,7 @@ rules:
 
 ```python
 # Load the validation-only grammar
-with open("validation_calculator.yaml", "r") as f:
-    grammar = yaml.safe_load(f)
-
-validator = Parser(grammar)
+validator = Parser.from_file("validation_calculator.yaml")
 result = validator.parse("((2 + 3) * 4) ^ 5")
 
 if result['status'] == 'success':
@@ -385,10 +419,7 @@ rules:
 
 ```python
 # Load the AST-generating grammar
-with open("ast_calculator.yaml", "r") as f:
-    grammar = yaml.safe_load(f)
-
-parser = Parser(grammar)
+parser = Parser.from_file("ast_calculator.yaml")
 result = parser.parse("((2 + 3) * 4) ^ 5")
 
 if result['status'] == 'success':
@@ -494,18 +525,11 @@ rules:
 **Usage:**
 
 ```python
-import yaml
 from koine.parser import Parser, Transpiler
 
 # Load the parser and transpiler grammars
-with open("ast_calculator.yaml", "r") as f:
-    parser_grammar = yaml.safe_load(f)
-with open("lisp_transpiler.yaml", "r") as f:
-    transpiler_grammar = yaml.safe_load(f)
-
-# Instantiate the tools
-parser = Parser(parser_grammar)
-transpiler = Transpiler(transpiler_grammar)
+parser = Parser.from_file("ast_calculator.yaml")
+transpiler = Transpiler.from_file("lisp_transpiler.yaml")
 
 # Run the pipeline
 parse_result = parser.parse("((2 - 3) * 4) ^ 5")
@@ -852,6 +876,20 @@ For a complete guide to Koine's features, including detailed explanations and ex
 - **[PARSING.md](./PARSING.md)**: Covers everything related to parsing text into an AST, from grammar basics to advanced features like lookaheads and lexer-based tokenization.
 
 - **[TRANSPILING.md](./TRANSPILING.md)**: Covers everything related to transforming an AST into text, including conditional logic, state management, and generating indented output.
+
+### Native implementation and verification
+
+A C++ runtime parser and transpiler with a C interface, Python `ctypes` wrapper
+and Nim `importc` package are available under **[native/](native/README.md)**. Parser/AST, subgrammar and
+placeholder checks pass against Koine and the shared SLIP grammars; native YAML
+loading uses rapidyaml.
+Native tokenization supports optional lexer blocks and indentation-sensitive
+grammars; native transpilation covers templates, conditions, state and output
+indentation. Public behavioral tests include complete Python↔JavaScript pipelines.
+Nim C/C++ backend ownership checks pass under GCC 15 with leak detection enabled.
+Linux and Windows verification is recorded in **[PLAN.md](PLAN.md)**. See
+**[SPEC.md](SPEC.md)** for the agreed contracts and **[PLAN.md](PLAN.md)** for
+milestones, verification evidence, and remaining work.
 
 ## Author
 
