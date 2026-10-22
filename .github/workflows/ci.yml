@@ -44,8 +44,10 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 30
     env:
-      CMAKE_GENERATOR: Visual Studio 17 2022
+      CMAKE_GENERATOR: Ninja
       CMAKE_BUILD_PARALLEL_LEVEL: "4"
+      CC: cl
+      CXX: cl
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -56,7 +58,7 @@ jobs:
         shell: pwsh
         run: |
           python -m pip install --upgrade pip
-          pip install build scikit-build-core cmake
+          pip install build scikit-build-core cmake ninja
           python -m build native --wheel --no-isolation --outdir build/wheels
           $wheel = Get-ChildItem build/wheels/*win_amd64.whl
           if (-not $wheel) { throw "win_amd64 wheel was not produced" }
@@ -71,10 +73,10 @@ jobs:
         run: |
           pip install pytest pytest-subtests parsimonious regex safer-yaml pyyaml
           $python = (Get-Command python).Source
-          cmake -S native -B build/native -G "$env:CMAKE_GENERATOR" -A x64 `
-            -DBUILD_TESTING=ON "-DPython3_EXECUTABLE=$python"
-          cmake --build build/native --config Release --parallel
-          ctest --test-dir build/native -C Release --output-on-failure
+          cmake -S native -B build/native -G "$env:CMAKE_GENERATOR" `
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON "-DPython3_EXECUTABLE=$python"
+          cmake --build build/native --parallel
+          ctest --test-dir build/native --output-on-failure
           python -c "import pytest, koine.parser as p; p.transpile_grammar = lambda grammar: None; raise SystemExit(pytest.main(['-q', 'tests/test_edges.py', '-k', 'not transpile_grammar']))"
       - name: Build and test Nim with the MSVC backend
         shell: pwsh
