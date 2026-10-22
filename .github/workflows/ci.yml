@@ -93,13 +93,17 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "nimble install failed" }
           $pkg = Get-ChildItem "$root\build\nimble\pkgs2" -Directory |
             Where-Object { $_.Name -like "koine-*" } | Select-Object -First 1
+          Write-Host "pkg=$($pkg.FullName)"
+          Get-ChildItem $pkg.FullName | Select-Object Name | Out-String | Write-Host
           $out = Join-Path $root "build\nim-out"
           New-Item -ItemType Directory -Force -Path $out | Out-Null
           Copy-Item (Join-Path $pkg.FullName "koine\koine.dll") $out
           $env:KOINE_FIXTURES = Join-Path $root "tests"
+          $nimExe = Join-Path $root "build\nim-toolchain\nim-2.2.12\bin\nim.exe"
+          $test = Join-Path $root "native\tests\test_nim.nim"
           foreach ($backend in @("c", "cpp")) {
-            nim $backend --cc:vcc --path:$pkg.FullName `
-              --out:"$out\consumer-$backend.exe" (Join-Path $root "native\tests\test_nim.nim")
+            & $nimExe $backend --cc:vcc "--path:$($pkg.FullName)" `
+              "--out:$out\consumer-$backend.exe" $test
             if ($LASTEXITCODE -ne 0) { throw "nim $backend failed" }
             $text = (& "$out\consumer-$backend.exe" 2>&1 | Out-String)
             $count = ([regex]::Matches($text, "\[OK\]")).Count
