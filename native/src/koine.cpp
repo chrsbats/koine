@@ -90,7 +90,7 @@ size_t codepoints(std::string_view text) {
 // The complete UTF-8 sequence containing byte `position`. cpp-peglib scans error
 // tokens with locale-dependent ctype, which can stop mid-sequence on Windows.
 std::string codepoint_at(std::string_view text, size_t position) {
-    position = std::min(position, text.size() ? text.size() - 1 : 0);
+    if (position >= text.size()) return "";
     while (position && (static_cast<unsigned char>(text[position]) & 0xc0) == 0x80) --position;
     const auto lead = static_cast<unsigned char>(text[position]);
     const size_t length = lead < 0x80 ? 1 : (lead & 0xe0) == 0xc0 ? 2 : (lead & 0xf0) == 0xe0 ? 3 :
@@ -108,7 +108,7 @@ std::string valid_utf8(std::string_view text) {
         const auto lead = static_cast<unsigned char>(text[i]);
         const size_t length = lead < 0x80 ? 1 : (lead & 0xe0) == 0xc0 ? 2 : (lead & 0xf0) == 0xe0 ? 3 :
             (lead & 0xf8) == 0xf0 ? 4 : 0;
-        bool complete = length && i + length <= text.size() && lead != 0xc0 && lead != 0xc1;
+        bool complete = length && i + length <= text.size() && lead != 0xc0 && lead != 0xc1 && lead <= 0xf4;
         for (size_t j = 1; complete && j < length; ++j)
             complete = (static_cast<unsigned char>(text[i + j]) & 0xc0) == 0x80;
         if (complete && length == 3) {
@@ -795,13 +795,22 @@ struct Parser {
         if (!result.ret) {
             peg::ErrorReporter report = [&](const peg::ErrorReport &error) {
                 std::string detail = error.message;
-                if (!error.unexpected_token.empty()) {
-                    const auto complete = codepoint_at(source, error.position);
-                    if (complete != error.unexpected_token) {
-                        for (size_t at = 0; (at = detail.find(error.unexpected_token, at)) != std::string::npos;
-                             at += complete.size())
-                            detail.replace(at, error.unexpected_token.size(), complete);
-                    }
+                auto unexpected = error.unexpected_token;
+                if (unexpected.empty() || valid_utf8(unexpected) != unexpected)
+                    unexpected = codepoint_at(source, error.position);
+                // message is only a custom error_message, not the formatted
+                // diagnostic. Ordinary failures supply the structured fields.
+                if (detail.empty()) {
+                    detail = error.position == source.size() ? "Unexpected end of input" :
+                        "Unexpected '" + unexpected + "'";
+                    bool first = true;
+                    auto expected = [&](const std::string &name) {
+                        detail += first ? ". Expected one of: " : ", ";
+                        detail += name;
+                        first = false;
+                    };
+                    for (const auto &literal : error.expected_literals) expected("'" + literal + "'");
+                    for (const auto &name : error.expected_rules) expected(name);
                 }
                 logger(error.line, error.col, detail, error.label);
             };
@@ -876,7 +885,7 @@ int koine_parser_prepare(const char *grammar, size_t size, const char *base, siz
         auto path = std::string(input(base, base_size));
         if (path.find('\0') != std::string::npos) throw std::invalid_argument("NUL in base path");
         *out = new koine_parser(koine::document(input(grammar, size)),
-            path.empty() ? std::filesystem::current_path() : std::filesystem::absolute(path), mode == KOINE_PARSER_PLACEHOLDER);
+            path.empty() ? std::filesystem::current_path() : std::filesystem::absolute(std::filesystem::u8path(path)), mode == KOINE_PARSER_PLACEHOLDER);
     });
 }
 
@@ -892,7 +901,7 @@ int koine_parser_prepare_file(const char *path, size_t size, koine_parser_mode m
         if (mode != KOINE_PARSER_FULL && mode != KOINE_PARSER_PLACEHOLDER) throw std::invalid_argument("Invalid parser mode");
         std::string filename(input(path, size));
         if (filename.find('\0') != std::string::npos) throw std::invalid_argument("NUL in grammar filename");
-        auto resolved = std::filesystem::weakly_canonical(std::filesystem::absolute(filename));
+        auto resolved = std::filesystem::weakly_canonical(std::filesystem::absolute(std::filesystem::u8path(filename)));
         *out = new koine_parser(koine::load_document(resolved), resolved.parent_path(), mode == KOINE_PARSER_PLACEHOLDER);
     });
 }
@@ -937,7 +946,7 @@ int koine_transpiler_from_file(const char *path, size_t size, koine_transpiler *
         if (!out) throw std::invalid_argument("Transpiler output must not be NULL");
         std::string filename(input(path, size));
         if (filename.find('\0') != std::string::npos) throw std::invalid_argument("NUL in grammar filename");
-        *out = new koine_transpiler(koine::load_document(filename));
+        *out = new koine_transpiler(koine::load_document(std::filesystem::u8path(filename)));
     });
 }
 

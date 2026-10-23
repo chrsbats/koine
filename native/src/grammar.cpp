@@ -15,7 +15,7 @@ namespace fs = std::filesystem;
 
 Json load_document(const fs::path &path) {
     std::ifstream stream(path, std::ios::binary);
-    if (!stream) throw std::invalid_argument("Could not open grammar file: " + path.string());
+    if (!stream) throw std::invalid_argument("Could not open grammar file: " + path.u8string());
     return document(std::string(std::istreambuf_iterator<char>(stream), {}));
 }
 
@@ -50,7 +50,7 @@ std::string namespace_for(const fs::path &path) {
     if (path.filename() == "_.yaml") return "";
     std::string out;
     bool capital = true;
-    for (unsigned char c : path.stem().string()) {
+    for (unsigned char c : path.stem().u8string()) {
         if (c == '-' || c == '_') { capital = true; continue; }
         out += static_cast<char>(capital ? std::toupper(c) : std::tolower(c));
         capital = false;
@@ -85,7 +85,7 @@ Json compose(Json initial, const fs::path &base) {
         }
         for (auto &entry : rules.items()) walk(entry.value(), [&](Json &part) {
             if (!part.contains("subgrammar")) return true;
-            auto dep = fs::weakly_canonical(path.parent_path() / part.at("subgrammar").at("file").get<std::string>());
+            auto dep = fs::weakly_canonical(path.parent_path() / fs::u8path(part.at("subgrammar").at("file").get<std::string>()));
             if (!documents.count(dep)) {
                 documents.emplace(dep, load_document(dep));
                 paths.push_back(dep);
@@ -111,7 +111,7 @@ Json compose(Json initial, const fs::path &base) {
                 if (part.contains("subgrammar")) {
                     auto config = part.at("subgrammar");
                     auto file = config.at("file").get<std::string>();
-                    auto dep = fs::weakly_canonical(path.parent_path() / file);
+                    auto dep = fs::weakly_canonical(path.parent_path() / fs::u8path(file));
                     std::string start = config.value("rule", std::string());
                     if (start.empty()) start = documents.at(dep).value("start_rule", std::string());
                     if (start.empty()) throw std::invalid_argument("Subgrammar '" + file + "' must have a 'start_rule' or a 'rule' must be specified.");

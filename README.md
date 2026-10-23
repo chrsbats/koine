@@ -91,9 +91,38 @@ support the `manylinux_2_27` / `manylinux_2_28` x86-64 tags; the Windows wheel i
 `py3-none-win_amd64`. Docker is not a build or runtime dependency.
 
 Grammar files accept YAML 1.2 and JSON natively. Unquoted `yes`, `no`, `on`, and
-`off` remain strings; `true` and `false` are booleans. The Python behavioral
-reference is retained under `reference/koine` and uses
-[safer-yaml](https://github.com/chrsbats/safer-yaml).
+`off` remain strings; `true` and `false` are booleans. The pure-Python implementation
+lives under `python/koine`, uses [safer-yaml](https://github.com/chrsbats/safer-yaml),
+and also serves as the behavioral reference for native checks. The native Python
+binding lives under `native/python/koine`.
+
+## Release builds
+
+Build the pure sdist/universal wheel and the portable Linux native wheel, then
+include a Windows wheel built on Windows:
+
+```bash
+python tools/build.py --windows-wheel /path/to/koine-0.11.1-py3-none-win_amd64.whl
+python tools/publish.py --dist dist
+```
+
+`tools/build.py` uses the GCC 15/glibc 2.28 SDK at
+`build/sdk-alma8-gcc15` by default. Create it with
+`native/tools/prepare_linux_sdk.py` if needed, or pass `--sdk`.
+Both release scripts keep subprocess caches, managed Python downloads and
+temporary files under `build/`, overriding inherited external scratch locations.
+
+After validation, upload to TestPyPI first:
+
+```bash
+python tools/publish.py --repository testpypi --upload
+```
+
+Once the TestPyPI install has been checked, repeat with
+`--repository pypi`. The script uses the matching `[testpypi]` or `[pypi]`
+section in `~/.pypirc`; if no section exists it falls back to `TWINE_USERNAME`
+and `TWINE_PASSWORD`. It only selects artifacts for the version in
+`pyproject.toml`; it never uploads older files left in `dist/`.
 
 ---
 

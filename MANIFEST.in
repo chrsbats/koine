@@ -5,11 +5,12 @@ include TRANSPILING.md
 include SPEC.md
 include koine.nimble
 include MANIFEST.in
-graft reference
-prune nim/koine
+graft python
 graft native
 graft nim
+prune nim/koine
 graft tests
+graft tools
 global-exclude __pycache__
 global-exclude *.py[cod]
 global-exclude *.so

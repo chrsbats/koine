@@ -23,14 +23,24 @@ jobs:
           pip install -e ".[dev]"
       - name: Run tests with coverage
         run: pytest --cov=koine --cov-fail-under=90
+      - name: Check release subprocess isolation
+        run: python native/tests/test_release.py
 
   native-linux:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    env:
+      CC: gcc-15
+      CXX: g++-15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Install GCC 15
+        run: |
+          sudo add-apt-repository --yes ppa:ubuntu-toolchain-r/test
+          sudo apt-get update
+          sudo apt-get install --yes gcc-15 g++-15
       - name: Install test dependencies
         run: pip install pytest pytest-subtests parsimonious regex safer-yaml pyyaml
       - name: Build and run native suites
@@ -58,8 +68,11 @@ jobs:
         shell: pwsh
         run: |
           python -m pip install --upgrade pip
+          if ($LASTEXITCODE -ne 0) { throw "pip upgrade failed" }
           pip install build scikit-build-core cmake ninja
+          if ($LASTEXITCODE -ne 0) { throw "build dependencies failed" }
           python -m build native --wheel --no-isolation --outdir build/wheels
+          if ($LASTEXITCODE -ne 0) { throw "native wheel build failed" }
           $wheel = Get-ChildItem build/wheels/*win_amd64.whl
           if (-not $wheel) { throw "win_amd64 wheel was not produced" }
       - name: Verify clean native install
@@ -67,16 +80,21 @@ jobs:
         run: |
           $wheel = Get-ChildItem build/wheels/*win_amd64.whl | Select-Object -First 1
           python -m pip install --no-deps $wheel.FullName
+          if ($LASTEXITCODE -ne 0) { throw "native wheel install failed" }
           python native/tests/check_installed.py tests
       - name: Build and run native suites
         shell: pwsh
         run: |
           pip install pytest pytest-subtests parsimonious regex safer-yaml pyyaml
+          if ($LASTEXITCODE -ne 0) { throw "test dependencies failed" }
           $python = (Get-Command python).Source
           cmake -S native -B build/native -G "$env:CMAKE_GENERATOR" `
             -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON "-DPython3_EXECUTABLE=$python"
+          if ($LASTEXITCODE -ne 0) { throw "CMake configure failed" }
           cmake --build build/native --parallel
+          if ($LASTEXITCODE -ne 0) { throw "native build failed" }
           ctest --test-dir build/native --output-on-failure
+          if ($LASTEXITCODE -ne 0) { throw "CTest failed" }
           python -c "import pytest, koine.parser as p; p.transpile_grammar = lambda grammar: None; raise SystemExit(pytest.main(['-q', 'tests/test_edges.py', '-k', 'not transpile_grammar']))"
       - name: Build and test Nim with the MSVC backend
         shell: pwsh
@@ -86,8 +104,11 @@ jobs:
           Expand-Archive build/nim.zip -DestinationPath build/nim-toolchain
           $env:PATH = "$root\build\nim-toolchain\nim-2.2.12\bin;$env:PATH"
           python -m build --sdist --outdir build/sdist
-          tar -xzf (Get-ChildItem build/sdist/koine-*.tar.gz).FullName -C build
-          $src = Join-Path $root "build\koine-0.11.0"
+          if ($LASTEXITCODE -ne 0) { throw "sdist build failed" }
+          $sdist = Get-ChildItem build/sdist/koine-*.tar.gz
+          tar -xzf $sdist.FullName -C build
+          if ($LASTEXITCODE -ne 0) { throw "sdist extraction failed" }
+          $src = Join-Path $root ("build\" + $sdist.Name.Replace(".tar.gz", ""))
           Push-Location $src
           nimble --nimbleDir:"$root\build\nimble" install -y
           if ($LASTEXITCODE -ne 0) { throw "nimble install failed" }
@@ -106,6 +127,7 @@ jobs:
               "--out:$out\consumer-$backend.exe" $test
             if ($LASTEXITCODE -ne 0) { throw "nim $backend failed" }
             $text = (& "$out\consumer-$backend.exe" 2>&1 | Out-String)
+            if ($LASTEXITCODE -ne 0) { Write-Host $text; throw "Nim consumer $backend failed" }
             $count = ([regex]::Matches($text, "\[OK\]")).Count
             Write-Host "$backend OK=$count"
             if ($count -ne 8) { Write-Host $text; throw "expected 8 cases" }
@@ -121,10 +143,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Build and verify saved distributions
+        shell: bash
         run: |
-          source /opt/rh/gcc-toolset-14/enable 2>/dev/null || \
-            source /opt/rh/gcc-toolset-13/enable 2>/dev/null || true
-          gcc --version | head -1
+          dnf install -y gcc-toolset-15-gcc gcc-toolset-15-gcc-c++
+          source /opt/rh/gcc-toolset-15/enable
+          export CC=gcc CXX=g++
+          gcc --version
           export PATH=/opt/python/cp312-cp312/bin:$PATH
           pip install build scikit-build-core auditwheel cmake ninja
           python -m build --sdist --wheel --outdir dist

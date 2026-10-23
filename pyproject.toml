@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "koine"
-version = "0.11.0"
+version = "0.11.1"
 authors = [
   { name="Chris Bates", email="1314008+chrsbats@users.noreply.github.com" },
 ]
@@ -20,7 +20,6 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
-    "Programming Language :: Python :: C++",
     "Topic :: Software Development :: Compilers",
     "Topic :: Text Processing :: General",
 ]
@@ -43,7 +42,7 @@ dev = [
 
 [tool.setuptools]
 packages = ["koine"]
-package-dir = { koine = "reference/koine" }
+package-dir = { koine = "python/koine" }
 include-package-data = false
 
 [tool.pytest.ini_options]

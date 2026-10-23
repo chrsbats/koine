@@ -44,6 +44,23 @@ class NativeParserTests(unittest.TestCase):
         self.assertEqual(failure["status"], "error")
         self.assertIn("L2:C1", failure["message"])
 
+    def test_literal_errors_retain_expected_and_unexpected_input(self):
+        parser = Parser({"start_rule": "start", "rules": {"start": {"literal": "x"}}})
+        for source in ("word", "é", "😀", ""):
+            with self.subTest(source=source):
+                result = parser.parse(source)
+                self.assertEqual(result["status"], "error")
+                self.assertIn("L1:C1", result["message"])
+                self.assertIn("'x'", result["message"])
+                self.assertIn(source if source else "end of input", result["message"])
+        parser = Parser({"start_rule": "start", "rules": {"start": {"sequence": [
+            {"literal": "é\n"}, {"choice": [{"literal": "x"}, {"literal": "y"}]},
+        ]}}})
+        result = parser.parse("é\nword")
+        self.assertEqual(result["status"], "error")
+        for detail in ("L2:C1", "word", "'x'", "'y'"):
+            self.assertIn(detail, result["message"])
+
     def test_full_subject_regex_context(self):
         parser = Parser({"start_rule": "start", "rules": {
             "start": {"sequence": [
@@ -174,6 +191,30 @@ class NativeParserTests(unittest.TestCase):
                 "subgrammar": {"file": "child.yaml"},
             }}}, base_path=directory)
             self.assertEqual(parser.parse("child")["ast"]["tag"], "Child_word")
+
+    def test_unicode_files_base_paths_and_subgrammars(self):
+        with tempfile.TemporaryDirectory(prefix="koine-语法-") as directory:
+            base = Path(directory)
+            child = base / "子目录" / "café.json"
+            child.parent.mkdir()
+            child.write_text(json.dumps({"start_rule": "word", "rules": {
+                "word": {"literal": "café"},
+            }}, ensure_ascii=False), encoding="utf-8")
+            grammar = {"start_rule": "main", "rules": {"main": {"subgrammar": {
+                "file": "子目录/café.json", "placeholder": {"literal": "local"},
+            }}}}
+            main = base / "主文件.json"
+            main.write_text(json.dumps(grammar, ensure_ascii=False), encoding="utf-8")
+            for parser in (Parser.from_file(main), Parser(grammar, base_path=base)):
+                self.assertEqual(parser.parse("café"), {
+                    "status": "success", "ast": {
+                        "tag": "Café_word", "text": "café", "line": 1, "col": 1,
+                    },
+                })
+            self.assertEqual(PlaceholderParser.from_file(main).validate("local"), (True, "success"))
+            with self.assertRaises(ValueError) as failure:
+                Parser.from_file(base / "不存在.json")
+            self.assertIn("不存在.json", str(failure.exception))
 
     def test_recursive_matching_is_validated_at_construction(self):
         for node in ({"rule": "main"}, {"sequence": [{"regex": "(?=a)"}, {"rule": "main"}]}):

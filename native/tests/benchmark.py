@@ -14,7 +14,7 @@ from koine import Parser, Transpiler
 
 
 ROOT = Path(__file__).resolve().parents[2]
-spec = importlib.util.spec_from_file_location("benchmark_reference", ROOT / "reference/koine/parser.py")
+spec = importlib.util.spec_from_file_location("benchmark_reference", ROOT / "python/koine/parser.py")
 reference = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = reference
 spec.loader.exec_module(reference)

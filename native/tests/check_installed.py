@@ -20,8 +20,8 @@ def check_common():
         "file": "missing.yaml", "placeholder": {"literal": "local"}
     }}}})
     assert placeholder.validate("local") == (True, "success")
-    with tempfile.TemporaryDirectory() as directory:
-        path = Path(directory) / "output.yaml"
+    with tempfile.TemporaryDirectory(prefix="koine-文件-") as directory:
+        path = Path(directory) / "输出.yaml"
         path.write_text("rules:\n  leaf: {value: on}\n", encoding="utf-8")
         assert Transpiler.from_file(path).transpile({"tag": "leaf"}) == "on"
 

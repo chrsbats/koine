@@ -90,5 +90,27 @@ int main(int argc, char **argv)
     CHECK(koine_parser_parse(parser, "a", 1, NULL, 0, &result, &error) == 0);
     koine_buffer_free(&result);
     koine_parser_destroy(parser);
+
+    // Literal-only grammars report malformed unconsumed snippets as parse errors,
+    // not as JSON serialization failures. Include every invalid UTF-8 lead range.
+    const char *literal = "{\"start_rule\":\"x\",\"rules\":{\"x\":{\"literal\":\"x\"}}}";
+    const char *snippets[] = {
+        "x\xff", "x\xc0\x80", "x\xed\xa0\x80", "x\xf0\x80\x80\x80",
+        "x\xf4\x90\x80\x80", "x\xf5\x80\x80\x80", "x\xf6\x80\x80\x80",
+        "x\xf7\xbf\xbf\xbf", "x\xe2\x82",
+    };
+    CHECK(koine_parser_create(literal, strlen(literal), &parser, &error) == 0);
+    for (size_t i = 0; i < sizeof(snippets) / sizeof(snippets[0]); ++i) {
+        CHECK(koine_parser_parse(parser, snippets[i], strlen(snippets[i]), NULL, 0, &result, &error) == 0);
+        CHECK(error.data == NULL);
+        CHECK(strstr(result.data, "\"status\":\"error\"") != NULL);
+        CHECK(strstr(result.data, "L1:C2") != NULL);
+        CHECK(strstr(result.data, "\xef\xbf\xbd") != NULL);
+        koine_buffer_free(&result);
+    }
+    CHECK(koine_parser_parse(parser, "x", 1, NULL, 0, &result, &error) == 0);
+    CHECK(strstr(result.data, "\"status\":\"success\"") != NULL);
+    koine_buffer_free(&result);
+    koine_parser_destroy(parser);
     return 0;
 }

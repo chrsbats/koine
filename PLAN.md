@@ -2,6 +2,161 @@
 
 ## Status and current scope
 
+**Completed authorized increment: clear Python package layout and release 0.11.1.**
+
+The user approved renaming the shipping pure backend from `reference/koine` to
+`python/koine`, keeping its implementation and public API intact. This makes the
+production role visible while retaining off-root imports for native verification.
+`SPEC.md` records the amended layout contract.
+
+PyPI already contains all four original 0.11.0 artifacts (published 2026-10-23).
+The later locally rebuilt 0.11.0 artifacts below are validation snapshots, not
+publishable replacements. The fixes and layout change therefore ship as 0.11.1.
+
+Execution and acceptance:
+
+1. Move the two pure package files without changing their contents; update active
+   packaging, native comparison paths, documentation and all three version fields.
+2. Check versions and pure imports from `python/koine`; run the existing pure suite
+   with its 90% coverage gate and native CTest comparisons against the moved backend.
+3. Rebuild the pure wheel/sdist and Linux GCC 15 / Windows MSVC native wheels once.
+   Inspect the saved layout/metadata, test clean installs and run strict Twine
+   validation. All scratch/cache/build work stays under the repository.
+
+Move and metadata/path updates are implemented. Both pure package files match their
+previous contents byte-for-byte, imports resolve to `python/koine`, and all project
+configs declare 0.11.1. The full pure suite passes **104 cases + 2 subtests** with
+**93.58% coverage**, preserving the 90% gate. Local pytest uses `--capture=no` for
+the mounted filesystem; the missing pytest-cov plugin was installed only in the
+repo-local test environment. Native Linux and MSVC Windows CTest pass **11/11**
+each, including the comparisons that load the moved pure backend.
+
+All four 0.11.1 artifacts are built and verified in `dist/`. The source archive
+contains `python/koine` and no `reference/` tree; the universal wheel contains the
+exact moved implementation. Saved contracts, configs and affected comparison
+scripts match the checkout. The Linux wheel uses GCC 15.2.1/glibc 2.28; Windows
+uses native MSVC 2022. Each native wheel was rebuilt once for this version.
+
+Fresh disposable installs of the pure wheel, pure sdist, portable Linux wheel and
+Windows wheel all report version 0.11.1 and pass the installed API checks. Both
+native-wheel installs also pass all **18 parser API cases**. The disposable venvs
+were removed after verification. `tools/publish.py --dist dist` selects only the
+0.11.1 files and passes archive inspection plus `twine check --strict` without
+uploading. `git diff --check` passes.
+
+Saved 0.11.1 artifacts (SHA256):
+
+- `koine-0.11.1.tar.gz`:
+  `709552786ab60a1e7c56e52489a87242f0d080f698995a67de0de296cdb7a6d0`
+- `koine-0.11.1-py3-none-any.whl`:
+  `9952bcd56dd3e1db983e6b534407b229e84d9829fa737bd11d3a14ccb901faa2`
+- `koine-0.11.1-py3-none-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl`:
+  `6626df3aaa683c7aa855a39df68fa37fdd15f9161e6eed872c5534e9de01cf3c`
+- `koine-0.11.1-py3-none-win_amd64.whl`:
+  `4bd8ebeb574795b8205d1d389c55ec828791854111a2acdf0e1567988d69296c`
+
+Existing uncommitted fixes remain part of this release. No implementation blocker
+remains; commit/push/upload and hosted CI are pending user-directed Git/release work.
+
+**Completed authorized increment: fix the independent review findings.**
+
+Required mechanisms and acceptance checks:
+
+1. Restore ordinary parser diagnostics from cpp-peglib's structured expected and
+   unexpected fields (`PARSING.md` section 7 and `SPEC.md`). Reject out-of-range
+   UTF-8 lead bytes when sanitizing snippets. Regressions must show meaningful
+   literal/choice errors and ordinary C-API parse-error JSON for malformed snippets.
+2. Treat every native filesystem input/output as UTF-8 (`SPEC.md`, C API).
+   Exercise parser/placeholder/transpiler file construction, explicit base paths,
+   nested subgrammars and missing-file diagnostics with real non-ASCII paths on
+   Linux and native MSVC Windows.
+3. Check native exit codes in Windows CI, select GCC 15 in Linux CI, and distinguish
+   default CTest's 9 raw-AST / 82 document cases from optional SLIP corpus runs.
+   Verify PowerShell failure propagation and workflow syntax locally.
+4. Pin all release subprocess cache/temp/download directories inside `build/`.
+   Exercise real subprocesses with hostile inherited paths and confirm failures
+   propagate; validate saved distributions without uploading.
+
+Reproduced before the fixes: literal mismatches end in an empty diagnostic; input
+`x F5 80 80 80` fails JSON emission; PowerShell native exit 7 followed by exit 0
+reports success. The real non-ASCII-file regression also failed on native Windows.
+Existing uncommitted release changes are preserved. The four saved 0.11.0 release
+artifacts have now been rebuilt with the fixes; their updated hashes are below.
+
+Native fixes implemented and verified: structured expected/unexpected diagnostics,
+UTF-8 sanitizer upper bound, explicit `u8path` inputs / `u8string` path output.
+The new tests cover literal/choice/EOF/Unicode diagnostics, nine malformed snippet
+forms with parser recovery, Unicode root/base/child paths, placeholder files,
+transpiler YAML/JSON files and missing-file messages. All 11 CTest suites pass on
+Linux GCC 15 Debug and native Windows MSVC Release.
+
+CI now checks intermediate Windows native exit codes (including Nim consumers),
+selects GCC 15 explicitly for Linux verification and manylinux wheel builds, and
+derives the extracted source directory from the archive name. Ubuntu 24.04's
+toolchain PPA currently supplies GCC/G++ 15.2.0. Default CTest corpus counts are
+corrected below; the existing combining-mark `\w` difference is documented in the
+native README, with a checked explicit class that works in both scannerless engines.
+
+Both release scripts share one subprocess boundary that overrides inherited
+cache/temp/managed-Python directories under `build/`, preserving build-specific
+settings and propagating failures. Release scripts are included in source archives.
+The rebuild exposed that `graft nim` undid the earlier generated-payload prune;
+the prune now follows the graft, and archive inspection rejects `nim/koine/`.
+
+Final verification:
+
+- Linux GCC 15 Debug and native Windows MSVC Release: **11/11 CTest suites each**.
+- GCC 15 ASan/UBSan with leak detection: **3/3 C API suites**. The combined build
+  and test command reached its tool timeout after compilation; rerunning the
+  already-built three suites completed successfully in 3.56 seconds.
+- Fresh dependency-free installs of the saved portable Linux and Windows wheels
+  pass `check_installed.py` (including Unicode output-grammar paths), all **18
+  native parser API cases**, and direct malformed-UTF-8 C-API probes.
+- A fresh install from the saved sdist builds the pure backend and passes its
+  installed parser/lexer/placeholder/transpiler checks.
+- `native/tests/test_release.py`: **2/2 real-subprocess boundary tests** on Linux
+  and Windows, with hostile inherited scratch paths and an exit-7 child.
+- All workflow Bash blocks and all four PowerShell blocks parse. Executing the
+  actual CTest guard continues after native exit 0 and stops after exit 7.
+- `tools/publish.py --dist dist` validates all four saved artifacts and passes
+  `twine check --strict` without uploading. Saved source bytes match the affected
+  contracts, modules, tests and release scripts. `git diff --check` passes.
+
+No implementation blocker remains. Hosted GitHub CI has not been rerun for these
+uncommitted changes. Next action: await user direction for Git/release operations.
+
+**Completed follow-up: repeatable release build and publish scripts.**
+
+Implemented:
+
+- `tools/build.py` builds the pure sdist/universal wheel and the portable Linux
+  wheel through the GCC 15/glibc 2.28 SDK, repairs the native wheel with
+  auditwheel, accepts an existing Windows wheel, validates all artifacts with
+  `native/tests/check_distribution.py`, and writes exact-version files to the
+  output directory.
+- `tools/publish.py` selects only exact-version artifacts, rejects ambiguous or
+  missing distributions, runs `check_distribution.py` and `twine check --strict`,
+  and uploads only with an explicit `--upload`. TestPyPI is the default target.
+  Uploads prefer the matching `[testpypi]` or `[pypi]` section in `~/.pypirc`;
+  when the section is absent they fall back to explicit repository URLs and
+  `TWINE_USERNAME`/`TWINE_PASSWORD`, with the username defaulting to `__token__`.
+- `check_distribution.py` now reads the expected version from `pyproject.toml`
+  instead of hard-coding it; both release scripts also run `check_versions.py`.
+
+Verification:
+
+- `python tools/build.py --out /tmp/koine-build-test --windows-wheel dist/koine-0.11.0-py3-none-win_amd64.whl`
+  rebuilt the pure and portable Linux wheels and validated the Windows wheel.
+- `python tools/publish.py --dist /tmp/koine-build-test` passed distribution and
+  `twine check --strict` validation without uploading.
+- `python tools/publish.py --dist dist` passed against the existing release
+  artifacts. Upload command construction was checked for configured `[testpypi]`
+  and `[pypi]` sections and for the environment-token fallback; missing section
+  and token produces an explicit error. No upload or commit was performed.
+- Removed the invalid `Programming Language :: Python :: C++` classifier from
+  both project configs. Rebuilt and verified all four 0.11.0 artifacts; none
+  retains the invalid classifier.
+
 **Completed authorized increment: Windows x64 native build (MSVC).**
 The user requested a Windows version, then chose the sibling recollector workflow:
 a Windows virtual environment in the repo, built and tested on the Windows host
@@ -31,9 +186,11 @@ Verification evidence (native Windows, MSVC 2022):
 - `python -m build native` with the Visual Studio generator produces
   `koine-0.11.0-py3-none-win_amd64.whl`; clean `check_installed` passes with that
   injected wheel before test-only dependencies are installed.
-- All **11 CTest suites pass natively on Windows**, including 85 document
-  comparisons, 141 raw AST/status comparisons, regex, lexer, transpiler and the
-  shared conformance suite (95 cases + 1 skipped loader test + 2 subtests).
+- All **11 CTest suites pass natively on Windows**, including the default 82
+  document comparisons, 9 raw AST/status comparisons, regex, lexer, transpiler and
+  the shared conformance suite. The 85-document / 141-AST figures elsewhere in this
+  history describe separate runs with the optional sibling SLIP corpus, not the
+  standard CTest invocation.
 - The 4 non-grammar edge cases pass separately on Windows.
 - The wheel contains `koine/koine.dll` and no import library or Python
   dependencies. The DLL is PE/AMD64 with all 13 `koine_*` exports and imports only
@@ -53,16 +210,17 @@ Verification evidence (native Windows, MSVC 2022):
   backends, wheel artifact), alongside the pure matrix, native Linux CTest, and
   manylinux artifact verification.
 
-Final 0.11.0 artifacts in `dist/`:
+Historical local 0.11.0 validation artifacts in `dist/` (superseded by 0.11.1;
+these differ from the original published artifacts):
 
 - `koine-0.11.0.tar.gz`
-  SHA256 `cf043c350555ba949e4626c54d977aa6466725411cb227af2583c94dd007a751`
+  SHA256 `21828285daa35146451c86fd5c06440ab12ed27eeeabe437205e7289c62da40f`
 - `koine-0.11.0-py3-none-any.whl`
-  SHA256 `46398be74b7b3892c2d53ffd57e97330c789b19111de9cd121f9267f11f4c900`
+  SHA256 `0a34d10220985e72e4dbdcfc8f8984fcc80cc3e6732e15a3c95d1b0dd0164170`
 - `koine-0.11.0-py3-none-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl`
-  SHA256 `7a9059b9e6cccbf132b2fe01f8a614272a8d8d5b7f1fecd31590eeafb1ecdac5`
+  SHA256 `361a8823255b3618635b92ce56b14077c80f89c70659e3855d60d8c4888e7ca3`
 - `koine-0.11.0-py3-none-win_amd64.whl`
-  SHA256 `c64701071526306a5760964387c922081b8f2a70d5b7f6a80786e8c17338b9b8`
+  SHA256 `5b5411229d01b4944813d9c20a875849db4a15dad3ac1472127458d77a195303`
 
 The Windows venv, toolchains and all build trees live under the repository
 (`.venvs/win`, `build/`); no Wine or cross-compiler is used for acceptance.

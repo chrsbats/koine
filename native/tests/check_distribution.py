@@ -2,10 +2,16 @@
 import argparse
 from email.parser import Parser
 from pathlib import Path
+import re
 import tarfile
 import zipfile
 
-VERSION = "0.11.0"
+ROOT = Path(__file__).resolve().parents[2]
+VERSION = re.search(
+    r'^version\s*=\s*"([^"]+)"',
+    (ROOT / "pyproject.toml").read_text(encoding="utf-8"),
+    re.MULTILINE,
+).group(1)
 
 
 def metadata(archive):
@@ -27,9 +33,12 @@ def main():
         for expected in ("pyproject.toml", "MANIFEST.in", "koine.nimble", "nim/koine.nim",
                          "native/pyproject.toml", "native/CMakeLists.txt", "native/src/koine.cpp",
                          "native/include/koine.h", "native/python/koine/parser.py",
-                         "reference/koine/parser.py", "tests/py_parser.yaml"):
+                         "python/koine/parser.py", "tests/py_parser.yaml",
+                         "tools/build.py", "tools/publish.py", "tools/_release.py"):
             assert expected in relative, expected
         for name in relative:
+            assert not name.startswith("reference/"), name
+            assert not name.startswith("nim/koine/"), name
             assert not any(part in (".git", "build", "dist", "__pycache__") for part in Path(name).parts), name
             assert not name.endswith((".so", ".a", ".dll", ".dylib", ".pyc")), name
         source = archive.extractfile(f"{root}/pyproject.toml").read().decode()
@@ -39,7 +48,7 @@ def main():
         names = archive.namelist()
         assert "koine/__init__.py" in names and "koine/parser.py" in names
         assert not any(name.endswith(("/libkoine.so", "/libkoine.dylib", "/koine.dll")) for name in names)
-        assert not any(name.startswith(("reference/", "native/", "nim/")) for name in names)
+        assert not any(name.startswith(("python/", "reference/", "native/", "nim/")) for name in names)
         info = metadata(archive)
         assert info["Name"] == "koine" and info["Version"] == VERSION
         requirements = " ".join(info.get_all("Requires-Dist", []))
@@ -50,7 +59,7 @@ def main():
     with zipfile.ZipFile(args.native_wheel) as archive:
         names = archive.namelist()
         assert "koine/__init__.py" in names and "koine/libkoine.so" in names
-        assert not any(name.startswith(("reference/", "nim/")) for name in names)
+        assert not any(name.startswith(("python/", "reference/", "nim/")) for name in names)
         for library in ("koine", "pcre2", "cpp-peglib", "nlohmann-json", "rapidyaml-c4core", "fast_float"):
             assert f"koine/licenses/{library}.txt" in names, library
         info = metadata(archive)

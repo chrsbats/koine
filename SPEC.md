@@ -4,7 +4,8 @@
 
 Provide one reusable C++ implementation of Koine, with a small C-compatible
 interface and ordinary Python and Nim packages named `koine`. Native source will
-live under `native/`; the Python implementation remains the behavioral reference.
+live under `native/`; the pure-Python implementation lives under `python/koine`
+and also serves as the behavioral reference.
 Execution steps and verification evidence live in [PLAN.md](PLAN.md).
 
 Koine's grammar format and JSON-compatible AST are the interoperability contract.
@@ -27,7 +28,7 @@ Use the existing contracts rather than introduce a new grammar language:
 - [TRANSPILING.md](TRANSPILING.md): templates, conditions, state, indentation,
   and output selection.
 - [tests/](tests/): executable API examples and regressions.
-- [Python implementation](reference/koine/parser.py): reference where the written contract
+- [Python implementation](python/koine/parser.py): reference where the written contract
   needs clarification. Surface disagreements or discovered defects before making
   them native behavior.
 
@@ -132,6 +133,11 @@ signatures and ownership rules are defined in [native/include/koine.h](native/in
 - Python and Nim wrappers manage native lifetimes and data conversions, so users
   work with normal dictionaries/lists/scalars or `JsonNode`, not manual handles.
 
+Filesystem paths crossing the native interface are UTF-8, including grammar
+filenames, base directories and subgrammar references. Convert them explicitly
+to the platform filesystem representation; Windows ANSI code pages must not
+change which file is opened. Path text in native diagnostics is UTF-8 too.
+
 Python uses `ctypes`; Nim uses `importc` with either `nim c` or `nim cpp`.
 Package loading/linking details belong inside the packages. The distribution goal
 is ordinary installation and `import koine`, with Python wheels bundling the native
@@ -143,7 +149,7 @@ native performance verification.
 Ship one distribution name, `koine`, with these artifacts per release:
 
 - A universal `py3-none-any` wheel containing the pure-Python implementation from
-  `reference/koine`. It declares `parsimonious` and `safer-yaml` dependencies.
+  `python/koine`. It declares `parsimonious` and `safer-yaml` dependencies.
 - Platform wheels built from the `native/` subproject containing the ctypes wrapper
   and bundled `libkoine`: Linux x86-64 (`manylinux_2_27`/`manylinux_2_28`) and
   Windows x86-64 (`win_amd64`). They declare no Python runtime dependencies. The
@@ -157,8 +163,10 @@ installs the universal wheel. `pip install --no-binary=koine koine` forces the p
 package from source on any platform. Both variants expose the same public API,
 including combined `parse_transpile`, `Transpiler.from_file` and `validate`.
 
-Keep the behavioral reference under `reference/koine` in the checkout. Build native
-platform wheels with scikit-build-core; the Python ABI-independent library is
+Keep the shipping pure-Python backend under `python/koine` and the native ctypes
+binding under `native/python/koine`. Both stay outside the checkout's root import
+path so a local package cannot shadow an installed variant. Build native platform
+wheels with scikit-build-core; the Python ABI-independent library is
 bundled beside the wrapper. Statically include the tested PCRE2 10.39 and rapidyaml
 code in `libkoine`, using their supported unmodified build APIs. The distribution
 version must match across the root `pyproject.toml`, `native/pyproject.toml` and
@@ -217,6 +225,14 @@ boundary/JSON costs are not engine throughput and must be reported as such.
 Error results must remain valid UTF-8 JSON even when the source or an upstream
 error snippet contains a multibyte character or malformed bytes; a parse error
 must never surface as a serialization failure.
+Ordinary syntax diagnostics retain the unexpected input and available expected
+literals/rules from the PEG engine, alongside the source location.
+
+CI must propagate each failed build/test command, including native executables
+invoked from PowerShell. Linux verification and release-wheel CI select GCC 15
+explicitly. Release tooling keeps subprocess caches, managed Python downloads and
+temporary files under the repository's `build/` directory, overriding inherited
+external scratch locations.
 
 Preparation must load each distinct grammar file once and reuse that content when
 expanding subgrammar directives; do not re-open or re-parse the same file per

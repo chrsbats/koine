@@ -40,8 +40,9 @@ Nim 2.2.12's C++ failed-result cleanup defect through the approved construction
 order. No special exception mode or runtime patch is needed.
 
 The library and Python package are staged together in `native/build/python/koine`.
-The test scripts import that package using `PYTHONPATH`. The behavioral reference
-lives under `reference/koine`, so it cannot shadow an installed native package:
+The test scripts import that package using `PYTHONPATH`. The shipping pure-Python
+implementation under `python/koine` also supplies the behavioral reference; its
+off-root location prevents it from shadowing an installed native package:
 
 ```bash
 PYTHONPATH=native/build/python python3 native/tests/test_native.py
@@ -100,9 +101,12 @@ Wheels bundle the shared core and dependency notices. Source builds fetch the
 pinned native dependencies; loading new grammars after installation never invokes
 a compiler.
 
-Build release artifacts from the repository with `uv build` (pure sdist/universal
-wheel at the root, native wheel from `native/`). The native wheel is repaired with
-auditwheel and receives the `manylinux_2_27`/`manylinux_2_28` tags.
+Build release artifacts from the repository with `tools/build.py` (pure
+sdist/universal wheel at the root, portable native wheel from `native/`). Pass a
+Windows wheel built on Windows with `--windows-wheel`. The native wheel is repaired
+with auditwheel and receives the `manylinux_2_27`/`manylinux_2_28` tags. Validate
+and publish saved artifacts with `tools/publish.py`; see the root README for the
+release commands.
 
 For Nim 2 with ARC/ORC, install once from the repository root:
 
@@ -238,8 +242,8 @@ Nim consumers use the same Windows toolchain:
 
 ```powershell
 nimble --nimbleDir:build\nimble install -y
-nim c --cc:vcc --path:build\nimble\pkgs2\koine-0.11.0-* app.nim
-nim cpp --cc:vcc --path:build\nimble\pkgs2\koine-0.11.0-* app.nim
+nim c --cc:vcc --path:build\nimble\pkgs2\koine-0.11.1-* app.nim
+nim cpp --cc:vcc --path:build\nimble\pkgs2\koine-0.11.1-* app.nim
 ```
 
 The Nimble install builds `koine.dll` and `koine.lib` with the Visual Studio
@@ -283,6 +287,10 @@ complete root result); this is not an attribution of all serialization overhead.
 - PCRE2 matching at a byte offset in the **complete subject**, preserving
   lookbehind/anchors. The adapter translates Python's absolute-end `\Z` to
   PCRE2's `\z`; escaped literal `\\Z` remains literal.
+  Unicode character classes are not identical to Python's `regex`: for example,
+  `\w+` accepts decomposed `e` + U+0301 in the pure scannerless parser but not in
+  PCRE2 10.39. Use an explicit class such as `[\p{L}\p{M}\p{N}_]+` when those
+  combining marks are part of an identifier.
 - Independent per-call results, serialized access to one parser from threads,
   C error reporting, and buffers that outlive source and parser storage.
 - Optional token-based parsing using the existing `lexer` and `token` grammar
@@ -426,7 +434,7 @@ checks are separate:
 
 ```bash
 PYTHONPATH=native/build/python python3 native/tests/conformance.py
-PYTHONPATH="$PWD/reference" python3 -m pytest -q tests/test_edges.py -k test_transpile_grammar
+PYTHONPATH="$PWD/python" python3 -m pytest -q tests/test_edges.py -k test_transpile_grammar
 ```
 
 The distribution inspection/clean-install tools are `tests/check_distribution.py`

@@ -33,6 +33,7 @@ typedef struct koine_buffer {
  * Return 0 on success, 1 on an API/construction error (error is UTF-8 text).
  * parse() returns a JSON success/error result for ordinary syntax failures.
  * Successful outputs are library-owned and require the matching release call.
+ * Filesystem paths are UTF-8 on every platform, including Windows.
  */
 KOINE_API int koine_parser_create(const char *grammar, size_t size,
                                  koine_parser **parser, koine_buffer *error);

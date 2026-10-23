@@ -13,7 +13,7 @@ from koine import Parser, Transpiler
 
 
 ROOT = Path(__file__).resolve().parents[2]
-spec = importlib.util.spec_from_file_location("transpiler_reference", ROOT / "reference/koine/parser.py")
+spec = importlib.util.spec_from_file_location("transpiler_reference", ROOT / "python/koine/parser.py")
 reference = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = reference
 spec.loader.exec_module(reference)
@@ -51,15 +51,15 @@ class NativeTranspilerTests(unittest.TestCase):
             tagged.parse_transpile("2", invalid, start_rule="x")
 
     def test_native_output_grammar_files(self):
-        with tempfile.TemporaryDirectory() as directory:
-            yaml_path = Path(directory) / "output.yaml"
+        with tempfile.TemporaryDirectory(prefix="koine-输出-") as directory:
+            yaml_path = Path(directory) / "出力.yaml"
             yaml_path.write_text("rules:\n  leaf: {value: on}\n", encoding="utf-8")
-            json_path = Path(directory) / "output.json"
+            json_path = Path(directory) / "出力.json"
             json_path.write_text(json.dumps({"rules": {"leaf": {"value": "on"}}}), encoding="utf-8")
             for path in (yaml_path, json_path):
                 self.assertEqual(Transpiler.from_file(path).transpile({"tag": "leaf"}), "on")
-            with self.assertRaisesRegex(ValueError, "Could not open"):
-                Transpiler.from_file(Path(directory) / "missing.yaml")
+            with self.assertRaisesRegex(ValueError, "Could not open.*不存在.yaml"):
+                Transpiler.from_file(Path(directory) / "不存在.yaml")
             with self.assertRaisesRegex(ValueError, "NUL"):
                 Transpiler.from_file(str(yaml_path) + "\0other")
 

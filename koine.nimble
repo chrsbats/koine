@@ -1,4 +1,4 @@
-version = "0.11.0"
+version = "0.11.1"
 author = "Chris Bates"
 description = "Runtime grammars, native parsing and AST transpilation over Koine's C API"
 license = "MIT"

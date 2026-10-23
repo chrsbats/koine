@@ -10,7 +10,7 @@ from koine import Parser, PlaceholderParser
 
 
 ROOT = Path(__file__).resolve().parents[2]
-spec = importlib.util.spec_from_file_location("koine_ast_reference", ROOT / "reference/koine/parser.py")
+spec = importlib.util.spec_from_file_location("koine_ast_reference", ROOT / "python/koine/parser.py")
 reference = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = reference
 spec.loader.exec_module(reference)
